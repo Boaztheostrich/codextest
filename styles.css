@@ -92,17 +92,3 @@ main {
 
 .hint { color: #bdbdbd; }
 .small { font-size: 0.82rem; }
-
-.debug {
-  margin: 0;
-  padding: 8px;
-  min-height: 68px;
-  max-height: 170px;
-  overflow: auto;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
-  background: #101010;
-  color: #9be3ff;
-  font-size: 0.78rem;
-  white-space: pre-wrap;
-}

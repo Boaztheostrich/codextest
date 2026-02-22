@@ -20,9 +20,7 @@ const els = {
   undoBtn: document.getElementById('undoBtn'),
   clearMarksBtn: document.getElementById('clearMarksBtn'),
   palette: document.getElementById('palette'),
-  status: document.getElementById('status'),
-  debugInfo: document.getElementById('debugInfo'),
-  reframeBtn: document.getElementById('reframeBtn')
+  status: document.getElementById('status')
 };
 
 const scene = new THREE.Scene();
@@ -86,10 +84,6 @@ function setStatus(msg) {
   els.status.textContent = msg;
 }
 
-function setDebugInfo(msg) {
-  if (els.debugInfo) els.debugInfo.textContent = msg;
-}
-
 function setMode(next) {
   mode = next;
   const ready = !!baseMesh && !!facePlane;
@@ -115,45 +109,23 @@ function setBaseMesh(geometry) {
   }
   geometry.center();
   geometry.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x9d9d9d,
-    roughness: 0.8,
-    metalness: 0.05,
-    side: THREE.DoubleSide
-  });
+  const mat = new THREE.MeshStandardMaterial({ color: 0x9d9d9d, roughness: 0.8, metalness: 0.05 });
   baseMesh = new THREE.Mesh(geometry, mat);
   baseMesh.name = 'baseMesh';
   scene.add(baseMesh);
 
-  fitCameraToObject(baseMesh);
-
   const bounds = new THREE.Box3().setFromObject(baseMesh);
-  const size = bounds.getSize(new THREE.Vector3());
-  const vertices = geometry.attributes?.position?.count || 0;
-  setDebugInfo(`Loaded mesh\nVertices: ${vertices}\nSize: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}\nCamera near/far: ${camera.near.toFixed(4)} / ${camera.far.toFixed(2)}`);
+  const size = bounds.getSize(new THREE.Vector3()).length();
+  controls.target.copy(bounds.getCenter(new THREE.Vector3()));
+  camera.position.copy(controls.target).add(new THREE.Vector3(size * 0.65, size * 0.55, size * 0.65));
+  controls.update();
 
   clearFaceSelection();
   marksGroup.clear();
   els.exportBtn.disabled = false;
-  els.reframeBtn.disabled = false;
   els.undoBtn.disabled = true;
   els.clearMarksBtn.disabled = true;
   setMode('pick');
-}
-
-function fitCameraToObject(object) {
-  const bounds = new THREE.Box3().setFromObject(object);
-  const center = bounds.getCenter(new THREE.Vector3());
-  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
-  const radius = Math.max(sphere.radius || 1, 1);
-
-  controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(radius * 2.4, radius * 1.8, radius * 2.4));
-
-  camera.near = Math.max(0.01, radius / 200);
-  camera.far = Math.max(5000, radius * 50);
-  camera.updateProjectionMatrix();
-  controls.update();
 }
 
 function calculateFaceFrame() {
@@ -247,19 +219,9 @@ els.stlInput.addEventListener('change', async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
   const buffer = await file.arrayBuffer();
-
-  try {
-    const geometry = stlLoader.parse(buffer);
-    if (!geometry || !geometry.attributes?.position || geometry.attributes.position.count === 0) {
-      throw new Error('STL geometry was empty.');
-    }
-    setBaseMesh(geometry);
-    setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
-  } catch (error) {
-    console.error(error);
-    setDebugInfo(`STL load error for ${file.name}\n${String(error)}`);
-    setStatus(`Failed to load ${file.name}. Ensure it is a valid STL file.`);
-  }
+  const geometry = stlLoader.parse(buffer);
+  setBaseMesh(geometry);
+  setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
 });
 
 els.pickFaceBtn.addEventListener('click', () => {
@@ -334,12 +296,6 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
 });
 window.addEventListener('pointerup', () => { isDrawing = false; });
 
-els.reframeBtn.addEventListener('click', () => {
-  if (!baseMesh) return;
-  fitCameraToObject(baseMesh);
-  setStatus('Camera reframed to loaded STL.');
-});
-
 els.exportBtn.addEventListener('click', async () => {
   if (!baseMesh) return;
 
@@ -359,20 +315,9 @@ els.exportBtn.addEventListener('click', async () => {
   URL.revokeObjectURL(url);
 });
 
-window.addEventListener('error', (event) => {
-  const msg = event?.message || 'Unknown runtime error';
-  setDebugInfo(`Runtime error\n${msg}`);
-  setStatus('Runtime error. Open browser DevTools console for details.');
-});
-window.addEventListener('unhandledrejection', (event) => {
-  setDebugInfo(`Promise rejection\n${String(event.reason)}`);
-  setStatus('Async error occurred. Open browser DevTools console for details.');
-});
-
 function resize() {
-  const main = renderer.domElement.parentElement;
-  const w = Math.max(1, main.clientWidth);
-  const h = Math.max(1, main.clientHeight);
+  const w = window.innerWidth - 340;
+  const h = window.innerHeight;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
