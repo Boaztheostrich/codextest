@@ -109,17 +109,16 @@ function setBaseMesh(geometry) {
   }
   geometry.center();
   geometry.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x9d9d9d,
-    roughness: 0.8,
-    metalness: 0.05,
-    side: THREE.DoubleSide
-  });
+  const mat = new THREE.MeshStandardMaterial({ color: 0x9d9d9d, roughness: 0.8, metalness: 0.05 });
   baseMesh = new THREE.Mesh(geometry, mat);
   baseMesh.name = 'baseMesh';
   scene.add(baseMesh);
 
-  fitCameraToObject(baseMesh);
+  const bounds = new THREE.Box3().setFromObject(baseMesh);
+  const size = bounds.getSize(new THREE.Vector3()).length();
+  controls.target.copy(bounds.getCenter(new THREE.Vector3()));
+  camera.position.copy(controls.target).add(new THREE.Vector3(size * 0.65, size * 0.55, size * 0.65));
+  controls.update();
 
   clearFaceSelection();
   marksGroup.clear();
@@ -127,23 +126,6 @@ function setBaseMesh(geometry) {
   els.undoBtn.disabled = true;
   els.clearMarksBtn.disabled = true;
   setMode('pick');
-}
-
-function fitCameraToObject(object) {
-  const bounds = new THREE.Box3().setFromObject(object);
-  const center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z, 1);
-  const fov = THREE.MathUtils.degToRad(camera.fov);
-  const cameraDistance = (maxDim * 0.75) / Math.tan(fov / 2);
-
-  controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(cameraDistance, cameraDistance * 0.8, cameraDistance));
-
-  camera.near = Math.max(0.01, maxDim / 1000);
-  camera.far = Math.max(5000, maxDim * 20);
-  camera.updateProjectionMatrix();
-  controls.update();
 }
 
 function calculateFaceFrame() {
@@ -237,18 +219,9 @@ els.stlInput.addEventListener('change', async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
   const buffer = await file.arrayBuffer();
-
-  try {
-    const geometry = stlLoader.parse(buffer);
-    if (!geometry || !geometry.attributes?.position || geometry.attributes.position.count === 0) {
-      throw new Error('STL geometry was empty.');
-    }
-    setBaseMesh(geometry);
-    setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
-  } catch (error) {
-    console.error(error);
-    setStatus(`Failed to load ${file.name}. Ensure it is a valid STL file.`);
-  }
+  const geometry = stlLoader.parse(buffer);
+  setBaseMesh(geometry);
+  setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
 });
 
 els.pickFaceBtn.addEventListener('click', () => {
@@ -343,9 +316,8 @@ els.exportBtn.addEventListener('click', async () => {
 });
 
 function resize() {
-  const main = renderer.domElement.parentElement;
-  const w = Math.max(1, main.clientWidth);
-  const h = Math.max(1, main.clientHeight);
+  const w = window.innerWidth - 340;
+  const h = window.innerHeight;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
