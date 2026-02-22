@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>STL Face Painter to 3MF</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <aside class="panel">
+      <h1>STL Face Painter</h1>
+      <p class="hint">Upload an STL, pick 3 points to define a face plane, then draw or type.</p>
+
+      <label class="field">
+        <span>STL file</span>
+        <input id="stlInput" type="file" accept=".stl" />
+      </label>
+
+      <div class="row">
+        <button id="reframeBtn" disabled>Reframe camera</button>
+      </div>
+
+      <div class="field">
+        <span>Mode</span>
+        <div class="row">
+          <button id="pickFaceBtn">1) Pick face (3 points)</button>
+          <button id="drawBtn" disabled>2) Draw</button>
+          <button id="textBtn" disabled>3) Type</button>
+        </div>
+      </div>
+
+      <label class="field">
+        <span>Text</span>
+        <input id="textInput" type="text" maxlength="32" value="TEXT" />
+      </label>
+
+      <label class="field">
+        <span>Brush radius (mm)</span>
+        <input id="brushSize" type="range" min="0.2" max="3" step="0.1" value="0.8" />
+      </label>
+
+      <div class="field">
+        <span>Color (max 4)</span>
+        <div id="palette" class="palette"></div>
+      </div>
+
+      <div class="field">
+        <span>Debug info</span>
+        <pre id="debugInfo" class="debug">No STL loaded yet.</pre>
+      </div>
+
+      <div class="row">
+        <button id="undoBtn" disabled>Undo last mark</button>
+        <button id="clearMarksBtn" disabled>Clear marks</button>
+      </div>
+
+      <button id="exportBtn" disabled>Export .3mf</button>
+      <p class="hint small">
+        Extrusions are inserted 0.4 mm into the model and exported as separate meshes (not merged with base).
+      </p>
+    </aside>
+
+    <main>
+      <canvas id="viewport"></canvas>
+      <div id="status" class="status">Load an STL to begin.</div>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
