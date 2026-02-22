@@ -237,9 +237,18 @@ els.stlInput.addEventListener('change', async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
   const buffer = await file.arrayBuffer();
-  const geometry = stlLoader.parse(buffer);
-  setBaseMesh(geometry);
-  setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
+
+  try {
+    const geometry = stlLoader.parse(buffer);
+    if (!geometry || !geometry.attributes?.position || geometry.attributes.position.count === 0) {
+      throw new Error('STL geometry was empty.');
+    }
+    setBaseMesh(geometry);
+    setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
+  } catch (error) {
+    console.error(error);
+    setStatus(`Failed to load ${file.name}. Ensure it is a valid STL file.`);
+  }
 });
 
 els.pickFaceBtn.addEventListener('click', () => {
