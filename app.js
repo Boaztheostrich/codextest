@@ -20,7 +20,8 @@ const els = {
   undoBtn: document.getElementById('undoBtn'),
   clearMarksBtn: document.getElementById('clearMarksBtn'),
   palette: document.getElementById('palette'),
-  status: document.getElementById('status')
+  status: document.getElementById('status'),
+  debug: document.getElementById('debug')
 };
 
 const scene = new THREE.Scene();
@@ -63,9 +64,15 @@ const stlLoader = new STLLoader();
 const fontLoader = new FontLoader();
 let loadedFont = null;
 
-fontLoader.load('https://unpkg.com/three@0.162.0/examples/fonts/helvetiker_regular.typeface.json', (font) => {
-  loadedFont = font;
-});
+fontLoader.load(
+  'https://unpkg.com/three@0.162.0/examples/fonts/helvetiker_regular.typeface.json',
+  (font) => {
+    loadedFont = font;
+    debugLog('font loaded');
+  },
+  undefined,
+  (err) => debugLog('font failed to load', { error: String(err) })
+);
 
 PALETTE.forEach((color, i) => {
   const b = document.createElement('button');
@@ -82,6 +89,19 @@ PALETTE.forEach((color, i) => {
 
 function setStatus(msg) {
   els.status.textContent = msg;
+  debugLog(`status: ${msg}`);
+}
+
+
+const debugLines = [];
+function debugLog(message, details) {
+  const stamp = new Date().toISOString().slice(11, 19);
+  const suffix = details ? ` | ${JSON.stringify(details)}` : '';
+  const line = `[${stamp}] ${message}${suffix}`;
+  debugLines.push(line);
+  if (debugLines.length > 18) debugLines.shift();
+  if (els.debug) els.debug.textContent = debugLines.join('\n');
+  console.debug('[STL Face Painter]', message, details || '');
 }
 
 function setMode(next) {
@@ -102,6 +122,28 @@ function clearFaceSelection() {
   facePlane = null;
 }
 
+
+function fitCameraToBounds(bounds) {
+  const center = bounds.getCenter(new THREE.Vector3());
+  const sizeVec = bounds.getSize(new THREE.Vector3());
+  const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z, 1);
+
+  camera.near = Math.max(maxDim / 2000, 0.01);
+  camera.far = Math.max(maxDim * 20, 4000);
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(maxDim * 1.2, maxDim * 0.95, maxDim * 1.2));
+  controls.maxDistance = maxDim * 15;
+  controls.update();
+
+  debugLog('camera fitted to mesh bounds', {
+    maxDim: Number(maxDim.toFixed(3)),
+    near: Number(camera.near.toFixed(4)),
+    far: Number(camera.far.toFixed(2))
+  });
+}
+
 function setBaseMesh(geometry) {
   if (baseMesh) {
     scene.remove(baseMesh);
@@ -109,16 +151,18 @@ function setBaseMesh(geometry) {
   }
   geometry.center();
   geometry.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({ color: 0x9d9d9d, roughness: 0.8, metalness: 0.05 });
+  const mat = new THREE.MeshStandardMaterial({ color: 0x9d9d9d, roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide });
   baseMesh = new THREE.Mesh(geometry, mat);
   baseMesh.name = 'baseMesh';
   scene.add(baseMesh);
 
   const bounds = new THREE.Box3().setFromObject(baseMesh);
-  const size = bounds.getSize(new THREE.Vector3()).length();
-  controls.target.copy(bounds.getCenter(new THREE.Vector3()));
-  camera.position.copy(controls.target).add(new THREE.Vector3(size * 0.65, size * 0.55, size * 0.65));
-  controls.update();
+  fitCameraToBounds(bounds);
+  const sizeVec = bounds.getSize(new THREE.Vector3());
+  debugLog('base mesh loaded', {
+    vertices: geometry.attributes.position?.count || 0,
+    size: [Number(sizeVec.x.toFixed(3)), Number(sizeVec.y.toFixed(3)), Number(sizeVec.z.toFixed(3))]
+  });
 
   clearFaceSelection();
   marksGroup.clear();
@@ -218,10 +262,17 @@ function createInsetText(point) {
 els.stlInput.addEventListener('change', async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
-  const buffer = await file.arrayBuffer();
-  const geometry = stlLoader.parse(buffer);
-  setBaseMesh(geometry);
-  setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
+  try {
+    debugLog('loading STL', { name: file.name, sizeBytes: file.size });
+    const buffer = await file.arrayBuffer();
+    const geometry = stlLoader.parse(buffer);
+    setBaseMesh(geometry);
+    setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
+  } catch (err) {
+    console.error(err);
+    setStatus('Failed to load STL. See debug panel for details.');
+    debugLog('stl parse failure', { error: String(err) });
+  }
 });
 
 els.pickFaceBtn.addEventListener('click', () => {
@@ -269,6 +320,10 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
       calculateFaceFrame();
       setMode('draw');
       setStatus('Face defined. Draw or type on that plane.');
+      debugLog('face plane selected', {
+        origin: pickPoints[0].toArray().map((v) => Number(v.toFixed(3))),
+        normal: faceNormal.toArray().map((v) => Number(v.toFixed(5)))
+      });
     }
     return;
   }
@@ -304,6 +359,7 @@ els.exportBtn.addEventListener('click', async () => {
   exportRoot.add(baseMesh.clone());
   marksGroup.children.forEach((mark) => exportRoot.add(mark.clone()));
 
+  debugLog('starting 3mf export', { marks: marksGroup.children.length });
   const exporter = new ThreeMFExporter();
   const arrayBuffer = await exporter.parseAsync(exportRoot);
   const blob = new Blob([arrayBuffer], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
@@ -313,6 +369,7 @@ els.exportBtn.addEventListener('click', async () => {
   a.download = 'painted-model.3mf';
   a.click();
   URL.revokeObjectURL(url);
+  debugLog('3mf export complete');
 });
 
 function resize() {
@@ -324,6 +381,7 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+debugLog('app initialized');
 
 (function render() {
   requestAnimationFrame(render);
