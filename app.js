@@ -3,7 +3,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
-import { ThreeMFExporter } from 'three/addons/exporters/3MFExporter.js';
 
 const EXTRUSION_DEPTH_MM = 0.4;
 const PALETTE = ['#ff5a5a', '#4ecdc4', '#ffe66d', '#9f7aea'];
@@ -66,6 +65,31 @@ const pointer = new THREE.Vector2();
 const stlLoader = new STLLoader();
 const fontLoader = new FontLoader();
 let loadedFont = null;
+
+let ThreeMFExporterCtor = null;
+async function getThreeMFExporterCtor() {
+  if (ThreeMFExporterCtor) return ThreeMFExporterCtor;
+
+  const candidates = [
+    'https://cdn.jsdelivr.net/npm/three@0.181.1/examples/jsm/exporters/3MFExporter.js',
+    'https://unpkg.com/three@0.181.1/examples/jsm/exporters/3MFExporter.js'
+  ];
+
+  for (const url of candidates) {
+    try {
+      const mod = await import(url);
+      if (mod?.ThreeMFExporter) {
+        ThreeMFExporterCtor = mod.ThreeMFExporter;
+        debugLog('3mf exporter module loaded', { url });
+        return ThreeMFExporterCtor;
+      }
+    } catch (err) {
+      debugLog('3mf exporter candidate failed', { url, error: String(err) });
+    }
+  }
+
+  throw new Error('3MF export module is unavailable from configured CDNs.');
+}
 
 fontLoader.load(
   'https://unpkg.com/three@0.162.0/examples/fonts/helvetiker_regular.typeface.json',
@@ -400,7 +424,15 @@ els.exportBtn.addEventListener('click', async () => {
   marksGroup.children.forEach((mark) => exportRoot.add(mark.clone()));
 
   debugLog('starting 3mf export', { marks: marksGroup.children.length });
-  const exporter = new ThreeMFExporter();
+  let ExporterCtor;
+  try {
+    ExporterCtor = await getThreeMFExporterCtor();
+  } catch (err) {
+    setStatus('3MF export is currently unavailable. See debug panel for details.');
+    debugLog('3mf exporter unavailable', { error: String(err) });
+    return;
+  }
+  const exporter = new ExporterCtor();
   const arrayBuffer = await exporter.parseAsync(exportRoot);
   const blob = new Blob([arrayBuffer], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
   const url = URL.createObjectURL(blob);
