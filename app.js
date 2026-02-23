@@ -66,22 +66,22 @@ const stlLoader = new STLLoader();
 const fontLoader = new FontLoader();
 let loadedFont = null;
 
-let ThreeMFExporterCtor = null;
-async function getThreeMFExporterCtor() {
-  if (ThreeMFExporterCtor) return ThreeMFExporterCtor;
+let exportTo3MFFn = null;
+async function get3MFExportFn() {
+  if (exportTo3MFFn) return exportTo3MFFn;
 
   const candidates = [
-    'https://cdn.jsdelivr.net/npm/three@0.181.1/examples/jsm/exporters/3MFExporter.js',
-    'https://unpkg.com/three@0.181.1/examples/jsm/exporters/3MFExporter.js'
+    'https://cdn.jsdelivr.net/npm/three-3mf-exporter@45.0.0/+esm',
+    'https://esm.sh/three-3mf-exporter@45.0.0'
   ];
 
   for (const url of candidates) {
     try {
       const mod = await import(url);
-      if (mod?.ThreeMFExporter) {
-        ThreeMFExporterCtor = mod.ThreeMFExporter;
+      if (mod?.exportTo3MF) {
+        exportTo3MFFn = mod.exportTo3MF;
         debugLog('3mf exporter module loaded', { url });
-        return ThreeMFExporterCtor;
+        return exportTo3MFFn;
       }
     } catch (err) {
       debugLog('3mf exporter candidate failed', { url, error: String(err) });
@@ -424,17 +424,15 @@ els.exportBtn.addEventListener('click', async () => {
   marksGroup.children.forEach((mark) => exportRoot.add(mark.clone()));
 
   debugLog('starting 3mf export', { marks: marksGroup.children.length });
-  let ExporterCtor;
+  let exportTo3MF;
   try {
-    ExporterCtor = await getThreeMFExporterCtor();
+    exportTo3MF = await get3MFExportFn();
   } catch (err) {
     setStatus('3MF export is currently unavailable. See debug panel for details.');
     debugLog('3mf exporter unavailable', { error: String(err) });
     return;
   }
-  const exporter = new ExporterCtor();
-  const arrayBuffer = await exporter.parseAsync(exportRoot);
-  const blob = new Blob([arrayBuffer], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
+  const blob = await exportTo3MF(exportRoot, { compression: 'standard' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

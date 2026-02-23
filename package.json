@@ -1,0 +1,17 @@
+{
+  "name": "codextest",
+  "version": "1.0.0",
+  "description": "A browser-based prototype that lets you:",
+  "main": "app.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "three": "^0.162.0",
+    "three-3mf-exporter": "^45.0.0"
+  }
+}
