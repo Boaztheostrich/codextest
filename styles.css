@@ -110,3 +110,16 @@ main {
 
 .hint { color: #bdbdbd; }
 .small { font-size: 0.82rem; }
+
+.checkbox-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.checkbox-option input {
+  margin: 0;
+}

@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+import { ThreeMFExporter } from 'three/addons/exporters/3MFExporter.js';
 
 const EXTRUSION_DEPTH_MM = 0.4;
 const PALETTE = ['#ff5a5a', '#4ecdc4', '#ffe66d', '#9f7aea'];
@@ -15,6 +16,7 @@ const els = {
   textBtn: document.getElementById('textBtn'),
   textInput: document.getElementById('textInput'),
   brushSize: document.getElementById('brushSize'),
+  lockRotation: document.getElementById('lockRotation'),
   exportBtn: document.getElementById('exportBtn'),
   undoBtn: document.getElementById('undoBtn'),
   clearMarksBtn: document.getElementById('clearMarksBtn'),
@@ -44,6 +46,7 @@ let activeColor = PALETTE[0];
 let mode = 'idle';
 let isDrawing = false;
 let baseMesh = null;
+let baseBoundsCenter = new THREE.Vector3();
 let marksGroup = new THREE.Group();
 marksGroup.name = 'markMeshes';
 scene.add(marksGroup);
@@ -52,6 +55,7 @@ const pickPoints = [];
 let pickMarkers = [];
 let facePlane = null;
 let faceNormal = new THREE.Vector3(0, 0, 1);
+let insetNormal = new THREE.Vector3(0, 0, -1);
 let faceU = new THREE.Vector3(1, 0, 0);
 let faceV = new THREE.Vector3(0, 1, 0);
 let faceOrigin = new THREE.Vector3();
@@ -62,31 +66,6 @@ const pointer = new THREE.Vector2();
 const stlLoader = new STLLoader();
 const fontLoader = new FontLoader();
 let loadedFont = null;
-
-let ThreeMFExporterCtor = null;
-async function getThreeMFExporterCtor() {
-  if (ThreeMFExporterCtor) return ThreeMFExporterCtor;
-
-  const candidates = [
-    'https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/exporters/3MFExporter.js',
-    'https://unpkg.com/three@0.162.0/examples/jsm/exporters/3MFExporter.js'
-  ];
-
-  for (const url of candidates) {
-    try {
-      const mod = await import(url);
-      if (mod?.ThreeMFExporter) {
-        ThreeMFExporterCtor = mod.ThreeMFExporter;
-        debugLog('3mf exporter module loaded', { url });
-        return ThreeMFExporterCtor;
-      }
-    } catch (err) {
-      debugLog('3mf exporter candidate failed', { url, error: String(err) });
-    }
-  }
-
-  throw new Error('3MF export module is unavailable from configured CDNs.');
-}
 
 fontLoader.load(
   'https://unpkg.com/three@0.162.0/examples/fonts/helvetiker_regular.typeface.json',
@@ -181,6 +160,7 @@ function setBaseMesh(geometry) {
   scene.add(baseMesh);
 
   const bounds = new THREE.Box3().setFromObject(baseMesh);
+  baseBoundsCenter = bounds.getCenter(new THREE.Vector3());
   fitCameraToBounds(bounds);
   const sizeVec = bounds.getSize(new THREE.Vector3());
   debugLog('base mesh loaded', {
@@ -206,6 +186,9 @@ function calculateFaceFrame() {
   faceV = new THREE.Vector3().crossVectors(faceNormal, faceU).normalize();
   faceOrigin = a.clone();
   facePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(faceNormal, faceOrigin);
+  insetNormal = faceNormal.dot(new THREE.Vector3().subVectors(baseBoundsCenter, faceOrigin)) >= 0
+    ? faceNormal.clone()
+    : faceNormal.clone().negate();
 
   const helperGeom = new THREE.PlaneGeometry(80, 80);
   const helperMat = new THREE.MeshBasicMaterial({ color: 0x44aaff, side: THREE.DoubleSide, transparent: true, opacity: 0.16 });
@@ -249,8 +232,8 @@ function createInsetDot(point) {
   const geo = new THREE.CylinderGeometry(radius, radius, EXTRUSION_DEPTH_MM, 20);
   const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), faceNormal.clone().negate());
-  const offset = faceNormal.clone().multiplyScalar(-EXTRUSION_DEPTH_MM * 0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), insetNormal);
+  const offset = insetNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
   mesh.position.copy(point).add(offset);
   pushMark(mesh);
 }
@@ -278,9 +261,35 @@ function createInsetText(point) {
 
   const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), faceNormal.clone().negate());
-  mesh.position.copy(point);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), insetNormal);
+  mesh.position.copy(point).add(insetNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM));
   pushMark(mesh);
+}
+
+let lastDrawPoint = null;
+
+function drawInterpolatedDots(nextPoint) {
+  if (!lastDrawPoint) {
+    createInsetDot(nextPoint);
+    lastDrawPoint = nextPoint.clone();
+    return;
+  }
+
+  const delta = new THREE.Vector3().subVectors(nextPoint, lastDrawPoint);
+  const distance = delta.length();
+  const step = Math.max(0.12, Number(els.brushSize.value) * 0.3);
+  if (distance < step * 0.4) return;
+
+  const direction = delta.normalize();
+  let traveled = step;
+  while (traveled <= distance) {
+    const sample = lastDrawPoint.clone().add(direction.clone().multiplyScalar(traveled));
+    createInsetDot(sample);
+    traveled += step;
+  }
+
+  createInsetDot(nextPoint);
+  lastDrawPoint = nextPoint.clone();
 }
 
 els.stlInput.addEventListener('change', async (ev) => {
@@ -305,6 +314,9 @@ els.pickFaceBtn.addEventListener('click', () => {
 });
 els.drawBtn.addEventListener('click', () => setMode('draw'));
 els.textBtn.addEventListener('click', () => setMode('text'));
+els.lockRotation?.addEventListener('change', () => {
+  controls.enableRotate = !els.lockRotation.checked;
+});
 
 els.undoBtn.addEventListener('click', () => {
   const mesh = marksGroup.children.at(-1);
@@ -356,6 +368,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     const point = intersectPlane(ev);
     if (!point) return;
     isDrawing = true;
+    lastDrawPoint = point.clone();
     createInsetDot(point);
     return;
   }
@@ -371,9 +384,12 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   if (!isDrawing || mode !== 'draw') return;
   const point = intersectPlane(ev);
   if (!point) return;
-  createInsetDot(point);
+  drawInterpolatedDots(point);
 });
-window.addEventListener('pointerup', () => { isDrawing = false; });
+window.addEventListener('pointerup', () => {
+  isDrawing = false;
+  lastDrawPoint = null;
+});
 
 els.exportBtn.addEventListener('click', async () => {
   if (!baseMesh) return;
@@ -384,15 +400,7 @@ els.exportBtn.addEventListener('click', async () => {
   marksGroup.children.forEach((mark) => exportRoot.add(mark.clone()));
 
   debugLog('starting 3mf export', { marks: marksGroup.children.length });
-  let ExporterCtor;
-  try {
-    ExporterCtor = await getThreeMFExporterCtor();
-  } catch (err) {
-    setStatus('3MF export is currently unavailable. See debug panel for details.');
-    debugLog('3mf exporter unavailable', { error: String(err) });
-    return;
-  }
-  const exporter = new ExporterCtor();
+  const exporter = new ThreeMFExporter();
   const arrayBuffer = await exporter.parseAsync(exportRoot);
   const blob = new Blob([arrayBuffer], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' });
   const url = URL.createObjectURL(blob);
