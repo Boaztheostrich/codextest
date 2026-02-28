@@ -19,6 +19,10 @@ const els = {
   brushSize: document.getElementById('brushSize'),
   lockRotation: document.getElementById('lockRotation'),
   showFacePlane: document.getElementById('showFacePlane'),
+  showGrid: document.getElementById('showGrid'),
+  showDebug: document.getElementById('showDebug'),
+  copyLogsBtn: document.getElementById('copyLogsBtn'),
+  clearLogsBtn: document.getElementById('clearLogsBtn'),
   exportBtn: document.getElementById('exportBtn'),
   undoBtn: document.getElementById('undoBtn'),
   redoBtn: document.getElementById('redoBtn'),
@@ -44,7 +48,8 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 0.95));
 const dir = new THREE.DirectionalLight(0xffffff, 0.8);
 dir.position.set(200, 220, 120);
 scene.add(dir);
-scene.add(new THREE.GridHelper(200, 20, 0x333333, 0x222222));
+const gridHelper = new THREE.GridHelper(200, 20, 0x333333, 0x222222);
+scene.add(gridHelper);
 
 let activeColor = PALETTE[0];
 let mode = 'idle';
@@ -64,6 +69,9 @@ let facePlane = null;
 let faceNormal = new THREE.Vector3(0, 0, 1);
 let insetNormal = new THREE.Vector3(0, 0, -1);
 let faceOrigin = new THREE.Vector3();
+let faceXAxis = new THREE.Vector3(1, 0, 0);
+let faceYAxis = new THREE.Vector3(0, 1, 0);
+let faceHelperSize = 0;
 let faceHelper = null;
 
 let bottomRef = null;
@@ -140,9 +148,14 @@ function debugLog(message, details) {
   const suffix = details ? ` | ${JSON.stringify(details)}` : '';
   const line = `[${stamp}] ${message}${suffix}`;
   debugLines.push(line);
-  if (debugLines.length > 18) debugLines.shift();
+  if (debugLines.length > 600) debugLines.shift();
   if (els.debug) els.debug.textContent = debugLines.join('\n');
   console.debug('[STL Face Painter]', message, details || '');
+}
+
+function clearDebugLog() {
+  debugLines.length = 0;
+  if (els.debug) els.debug.textContent = '';
 }
 
 function updateActionButtons() {
@@ -185,6 +198,7 @@ function clearFaceSelection() {
   removeMeshFromScene(faceHelper);
   faceHelper = null;
   facePlane = null;
+  faceHelperSize = 0;
   updateActionButtons();
 }
 
@@ -284,6 +298,8 @@ function calculateFaceFrame() {
   const ab = new THREE.Vector3().subVectors(b, a);
   const ac = new THREE.Vector3().subVectors(c, a);
   faceNormal = new THREE.Vector3().crossVectors(ab, ac).normalize();
+  faceXAxis = ab.lengthSq() > 1e-8 ? ab.clone().normalize() : new THREE.Vector3(1, 0, 0);
+  faceYAxis = new THREE.Vector3().crossVectors(faceNormal, faceXAxis).normalize();
 
   faceOrigin = a.clone();
   facePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(faceNormal, faceOrigin);
@@ -293,6 +309,7 @@ function calculateFaceFrame() {
 
   removeMeshFromScene(faceHelper);
   faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff);
+  faceHelperSize = THREE.MathUtils.clamp(baseMaxDimension * 0.75, 16, 400);
   updateFaceHelperVisibility();
 }
 
@@ -379,7 +396,17 @@ function intersectPlane(event) {
   updatePointer(event);
   raycaster.setFromCamera(pointer, camera);
   const out = new THREE.Vector3();
-  return raycaster.ray.intersectPlane(facePlane, out) ? out : null;
+  if (!raycaster.ray.intersectPlane(facePlane, out)) return null;
+
+  if (faceHelperSize > 0) {
+    const rel = new THREE.Vector3().subVectors(out, faceOrigin);
+    const half = faceHelperSize * 0.5;
+    const localX = rel.dot(faceXAxis);
+    const localY = rel.dot(faceYAxis);
+    if (Math.abs(localX) > half || Math.abs(localY) > half) return null;
+  }
+
+  return out;
 }
 
 function beginStroke() {
@@ -549,6 +576,31 @@ els.lockRotation?.addEventListener('change', () => {
   controls.enableRotate = !els.lockRotation.checked;
 });
 els.showFacePlane?.addEventListener('change', updateFaceHelperVisibility);
+els.showGrid?.addEventListener('change', () => {
+  gridHelper.visible = !!els.showGrid.checked;
+});
+els.showDebug?.addEventListener('change', () => {
+  els.debug?.classList.toggle('hidden', !els.showDebug.checked);
+});
+els.copyLogsBtn?.addEventListener('click', async () => {
+  const text = debugLines.join('\n');
+  if (!text) {
+    setStatus('No logs yet.');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus('Debug logs copied to clipboard.');
+  } catch (err) {
+    debugLog('clipboard write failed', { error: String(err) });
+    setStatus('Unable to copy logs automatically. Open devtools console to copy logs.');
+  }
+});
+els.clearLogsBtn?.addEventListener('click', () => {
+  clearDebugLog();
+  setStatus('Debug logs cleared.');
+});
 
 els.undoBtn.addEventListener('click', strokeUndo);
 els.redoBtn.addEventListener('click', strokeRedo);
@@ -658,6 +710,8 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+if (els.showGrid) gridHelper.visible = !!els.showGrid.checked;
+if (els.showDebug) els.debug?.classList.toggle('hidden', !els.showDebug.checked);
 updateActionButtons();
 debugLog('app initialized');
 
