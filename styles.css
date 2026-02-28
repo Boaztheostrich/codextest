@@ -123,3 +123,18 @@ main {
 .checkbox-option input {
   margin: 0;
 }
+
+.viewcube {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.viewcube button {
+  padding: 6px;
+  font-size: 0.82rem;
+}
+
+.viewcube button[data-view="iso"] {
+  grid-column: 1 / -1;
+}

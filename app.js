@@ -11,15 +11,20 @@ const els = {
   canvas: document.getElementById('viewport'),
   stlInput: document.getElementById('stlInput'),
   pickFaceBtn: document.getElementById('pickFaceBtn'),
+  pickBottomBtn: document.getElementById('pickBottomBtn'),
+  pickFrontBtn: document.getElementById('pickFrontBtn'),
   drawBtn: document.getElementById('drawBtn'),
   textBtn: document.getElementById('textBtn'),
   textInput: document.getElementById('textInput'),
   brushSize: document.getElementById('brushSize'),
   lockRotation: document.getElementById('lockRotation'),
+  showFacePlane: document.getElementById('showFacePlane'),
   exportBtn: document.getElementById('exportBtn'),
   undoBtn: document.getElementById('undoBtn'),
+  redoBtn: document.getElementById('redoBtn'),
   clearMarksBtn: document.getElementById('clearMarksBtn'),
   palette: document.getElementById('palette'),
+  viewCube: document.getElementById('viewCube'),
   status: document.getElementById('status'),
   debug: document.getElementById('debug')
 };
@@ -45,20 +50,30 @@ let activeColor = PALETTE[0];
 let mode = 'idle';
 let isDrawing = false;
 let baseMesh = null;
-let baseBoundsCenter = new THREE.Vector3();
-let marksGroup = new THREE.Group();
+const baseBoundsCenter = new THREE.Vector3();
+let baseMaxDimension = 80;
+const marksGroup = new THREE.Group();
 marksGroup.name = 'markMeshes';
 scene.add(marksGroup);
 
 const pickPoints = [];
 let pickMarkers = [];
+let activePickKind = 'face';
+
 let facePlane = null;
 let faceNormal = new THREE.Vector3(0, 0, 1);
 let insetNormal = new THREE.Vector3(0, 0, -1);
-let faceU = new THREE.Vector3(1, 0, 0);
-let faceV = new THREE.Vector3(0, 1, 0);
 let faceOrigin = new THREE.Vector3();
 let faceHelper = null;
+
+let bottomRef = null;
+let frontRef = null;
+let bottomHelper = null;
+let frontHelper = null;
+
+const undoStack = [];
+const redoStack = [];
+let currentStroke = null;
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -119,7 +134,6 @@ function setStatus(msg) {
   debugLog(`status: ${msg}`);
 }
 
-
 const debugLines = [];
 function debugLog(message, details) {
   const stamp = new Date().toISOString().slice(11, 19);
@@ -131,24 +145,61 @@ function debugLog(message, details) {
   console.debug('[STL Face Painter]', message, details || '');
 }
 
+function updateActionButtons() {
+  const readyToMark = !!baseMesh && !!facePlane;
+  const readyToRef = !!baseMesh;
+  els.drawBtn.disabled = !readyToMark;
+  els.textBtn.disabled = !readyToMark;
+  els.pickBottomBtn.disabled = !readyToRef;
+  els.pickFrontBtn.disabled = !readyToRef;
+  els.undoBtn.disabled = undoStack.length === 0;
+  els.redoBtn.disabled = redoStack.length === 0;
+  els.clearMarksBtn.disabled = marksGroup.children.length === 0;
+}
+
 function setMode(next) {
   mode = next;
-  const ready = !!baseMesh && !!facePlane;
-  els.drawBtn.disabled = !ready;
-  els.textBtn.disabled = !ready;
-  if (next === 'pick') setStatus('Click 3 points on the STL surface to define drawing plane.');
+  updateActionButtons();
+  if (next === 'pickFace') setStatus('Click 3 points on the STL surface to define drawing plane.');
+  if (next === 'pickBottom') setStatus('Click 3 points to define the bottom reference plane.');
+  if (next === 'pickFront') setStatus('Click 3 points to define the front reference plane.');
   if (next === 'draw') setStatus('Drag on the selected plane to create 0.4mm inset marks.');
   if (next === 'text') setStatus('Click on the selected plane to place text.');
 }
 
-function clearFaceSelection() {
-  pickPoints.length = 0;
-  pickMarkers.forEach((m) => scene.remove(m));
-  pickMarkers = [];
-  if (faceHelper) scene.remove(faceHelper);
-  facePlane = null;
+function removeMeshFromScene(mesh) {
+  if (!mesh) return;
+  mesh.parent?.remove(mesh);
+  mesh.geometry?.dispose?.();
+  mesh.material?.dispose?.();
 }
 
+function clearPickMarkers() {
+  pickPoints.length = 0;
+  pickMarkers.forEach((m) => removeMeshFromScene(m));
+  pickMarkers = [];
+}
+
+function clearFaceSelection() {
+  clearPickMarkers();
+  removeMeshFromScene(faceHelper);
+  faceHelper = null;
+  facePlane = null;
+  updateActionButtons();
+}
+
+function clearOrientationHelpers() {
+  removeMeshFromScene(bottomHelper);
+  removeMeshFromScene(frontHelper);
+  bottomHelper = null;
+  frontHelper = null;
+}
+
+function resetStrokeState() {
+  currentStroke = null;
+  undoStack.length = 0;
+  redoStack.length = 0;
+}
 
 function fitCameraToBounds(bounds) {
   const center = bounds.getCenter(new THREE.Vector3());
@@ -171,11 +222,20 @@ function fitCameraToBounds(bounds) {
   });
 }
 
+function clearAllMarks() {
+  while (marksGroup.children.length) {
+    const mesh = marksGroup.children[0];
+    removeMeshFromScene(mesh);
+  }
+  resetStrokeState();
+  updateActionButtons();
+}
+
 function setBaseMesh(geometry) {
   if (baseMesh) {
-    scene.remove(baseMesh);
-    baseMesh.geometry.dispose();
+    removeMeshFromScene(baseMesh);
   }
+
   geometry.center();
   geometry.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({ color: 0x9d9d9d, roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide });
@@ -184,20 +244,39 @@ function setBaseMesh(geometry) {
   scene.add(baseMesh);
 
   const bounds = new THREE.Box3().setFromObject(baseMesh);
-  baseBoundsCenter = bounds.getCenter(new THREE.Vector3());
-  fitCameraToBounds(bounds);
+  bounds.getCenter(baseBoundsCenter);
   const sizeVec = bounds.getSize(new THREE.Vector3());
+  baseMaxDimension = Math.max(sizeVec.x, sizeVec.y, sizeVec.z, 1);
+
+  fitCameraToBounds(bounds);
   debugLog('base mesh loaded', {
     vertices: geometry.attributes.position?.count || 0,
     size: [Number(sizeVec.x.toFixed(3)), Number(sizeVec.y.toFixed(3)), Number(sizeVec.z.toFixed(3))]
   });
 
   clearFaceSelection();
-  marksGroup.clear();
+  clearOrientationHelpers();
+  bottomRef = null;
+  frontRef = null;
+  clearAllMarks();
+
   els.exportBtn.disabled = false;
-  els.undoBtn.disabled = true;
-  els.clearMarksBtn.disabled = true;
-  setMode('pick');
+  setMode('pickFace');
+}
+
+function drawReferenceHelper(origin, normal, color) {
+  const helperSize = THREE.MathUtils.clamp(baseMaxDimension * 0.75, 16, 400);
+  const helperGeom = new THREE.PlaneGeometry(helperSize, helperSize);
+  const helperMat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.14 });
+  const helper = new THREE.Mesh(helperGeom, helperMat);
+  helper.position.copy(origin);
+  helper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+  scene.add(helper);
+  return helper;
+}
+
+function updateFaceHelperVisibility() {
+  if (faceHelper) faceHelper.visible = !!els.showFacePlane?.checked;
 }
 
 function calculateFaceFrame() {
@@ -206,21 +285,79 @@ function calculateFaceFrame() {
   const ac = new THREE.Vector3().subVectors(c, a);
   faceNormal = new THREE.Vector3().crossVectors(ab, ac).normalize();
 
-  faceU = ab.clone().normalize();
-  faceV = new THREE.Vector3().crossVectors(faceNormal, faceU).normalize();
   faceOrigin = a.clone();
   facePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(faceNormal, faceOrigin);
   insetNormal = faceNormal.dot(new THREE.Vector3().subVectors(baseBoundsCenter, faceOrigin)) >= 0
     ? faceNormal.clone()
     : faceNormal.clone().negate();
 
-  const helperGeom = new THREE.PlaneGeometry(80, 80);
-  const helperMat = new THREE.MeshBasicMaterial({ color: 0x44aaff, side: THREE.DoubleSide, transparent: true, opacity: 0.16 });
-  if (faceHelper) scene.remove(faceHelper);
-  faceHelper = new THREE.Mesh(helperGeom, helperMat);
-  faceHelper.position.copy(faceOrigin);
-  faceHelper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), faceNormal);
-  scene.add(faceHelper);
+  removeMeshFromScene(faceHelper);
+  faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff);
+  updateFaceHelperVisibility();
+}
+
+function computeOutwardNormal(a, b, c) {
+  const normal = new THREE.Vector3()
+    .crossVectors(new THREE.Vector3().subVectors(b, a), new THREE.Vector3().subVectors(c, a))
+    .normalize();
+  const toPoint = new THREE.Vector3().subVectors(a, baseBoundsCenter).normalize();
+  if (normal.dot(toPoint) < 0) normal.negate();
+  return normal;
+}
+
+function tryApplyOrientationFromReferences() {
+  if (!baseMesh || !bottomRef || !frontRef) return;
+
+  const down = bottomRef.normal.clone().normalize();
+  const up = down.clone().negate();
+
+  const frontProjected = frontRef.normal.clone().sub(down.clone().multiplyScalar(frontRef.normal.dot(down)));
+  if (frontProjected.lengthSq() < 1e-8) {
+    setStatus('Front reference is too parallel to bottom. Pick a different front plane.');
+    return;
+  }
+
+  const front = frontProjected.normalize();
+  const right = new THREE.Vector3().crossVectors(up, front).normalize();
+
+  const sourceBasis = new THREE.Matrix4().makeBasis(right, up, front);
+  const rotation = new THREE.Quaternion().setFromRotationMatrix(sourceBasis).invert();
+
+  baseMesh.applyQuaternion(rotation);
+  marksGroup.applyQuaternion(rotation);
+
+  const alignedBounds = new THREE.Box3().setFromObject(baseMesh);
+  alignedBounds.getCenter(baseBoundsCenter);
+
+  clearFaceSelection();
+  clearOrientationHelpers();
+  bottomRef = null;
+  frontRef = null;
+
+  fitCameraToBounds(alignedBounds);
+  setMode('pickFace');
+  setStatus('Model aligned from Bottom + Front references. Re-pick face and continue.');
+}
+
+function finishReferencePick() {
+  const [a, b, c] = pickPoints;
+  const normal = computeOutwardNormal(a, b, c);
+  const origin = a.clone();
+
+  if (activePickKind === 'bottom') {
+    removeMeshFromScene(bottomHelper);
+    bottomRef = { normal, origin };
+    bottomHelper = drawReferenceHelper(origin, normal, 0x2ecc71);
+    setStatus('Bottom reference captured. Now set front reference.');
+  } else if (activePickKind === 'front') {
+    removeMeshFromScene(frontHelper);
+    frontRef = { normal, origin };
+    frontHelper = drawReferenceHelper(origin, normal, 0xf1c40f);
+    setStatus('Front reference captured.');
+  }
+
+  clearPickMarkers();
+  tryApplyOrientationFromReferences();
 }
 
 function updatePointer(event) {
@@ -245,10 +382,22 @@ function intersectPlane(event) {
   return raycaster.ray.intersectPlane(facePlane, out) ? out : null;
 }
 
+function beginStroke() {
+  currentStroke = [];
+  redoStack.length = 0;
+  updateActionButtons();
+}
+
+function commitStroke() {
+  if (currentStroke?.length) undoStack.push(currentStroke);
+  currentStroke = null;
+  updateActionButtons();
+}
+
 function pushMark(mesh) {
   marksGroup.add(mesh);
-  els.undoBtn.disabled = marksGroup.children.length === 0;
-  els.clearMarksBtn.disabled = marksGroup.children.length === 0;
+  if (currentStroke) currentStroke.push(mesh);
+  updateActionButtons();
 }
 
 function createInsetDot(point) {
@@ -316,6 +465,53 @@ function drawInterpolatedDots(nextPoint) {
   lastDrawPoint = nextPoint.clone();
 }
 
+function strokeUndo() {
+  const stroke = undoStack.pop();
+  if (!stroke) return;
+
+  for (const mesh of stroke) removeMeshFromScene(mesh);
+  redoStack.push(stroke);
+  updateActionButtons();
+}
+
+function strokeRedo() {
+  const stroke = redoStack.pop();
+  if (!stroke) return;
+
+  for (const mesh of stroke) marksGroup.add(mesh);
+  undoStack.push(stroke);
+  updateActionButtons();
+}
+
+function snapView(viewName) {
+  if (!baseMesh) return;
+  const bounds = new THREE.Box3().setFromObject(baseMesh);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = Math.max(...bounds.getSize(new THREE.Vector3()).toArray(), 1);
+  const distance = size * 1.8;
+
+  const offsets = {
+    front: new THREE.Vector3(0, 0, distance),
+    back: new THREE.Vector3(0, 0, -distance),
+    right: new THREE.Vector3(distance, 0, 0),
+    left: new THREE.Vector3(-distance, 0, 0),
+    top: new THREE.Vector3(0, distance, 0),
+    bottom: new THREE.Vector3(0, -distance, 0),
+    iso: new THREE.Vector3(distance, distance, distance)
+  };
+
+  const upByView = {
+    top: new THREE.Vector3(0, 0, 1),
+    bottom: new THREE.Vector3(0, 0, -1)
+  };
+
+  const offset = offsets[viewName] || offsets.iso;
+  camera.position.copy(center).add(offset);
+  controls.target.copy(center);
+  camera.up.copy(upByView[viewName] || new THREE.Vector3(0, 1, 0));
+  controls.update();
+}
+
 els.stlInput.addEventListener('change', async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
@@ -334,39 +530,41 @@ els.stlInput.addEventListener('change', async (ev) => {
 
 els.pickFaceBtn.addEventListener('click', () => {
   clearFaceSelection();
-  setMode('pick');
+  activePickKind = 'face';
+  setMode('pickFace');
+});
+els.pickBottomBtn.addEventListener('click', () => {
+  clearPickMarkers();
+  activePickKind = 'bottom';
+  setMode('pickBottom');
+});
+els.pickFrontBtn.addEventListener('click', () => {
+  clearPickMarkers();
+  activePickKind = 'front';
+  setMode('pickFront');
 });
 els.drawBtn.addEventListener('click', () => setMode('draw'));
 els.textBtn.addEventListener('click', () => setMode('text'));
 els.lockRotation?.addEventListener('change', () => {
   controls.enableRotate = !els.lockRotation.checked;
 });
+els.showFacePlane?.addEventListener('change', updateFaceHelperVisibility);
 
-els.undoBtn.addEventListener('click', () => {
-  const mesh = marksGroup.children.at(-1);
-  if (!mesh) return;
-  marksGroup.remove(mesh);
-  mesh.geometry?.dispose?.();
-  mesh.material?.dispose?.();
-  els.undoBtn.disabled = marksGroup.children.length === 0;
-  els.clearMarksBtn.disabled = marksGroup.children.length === 0;
-});
+els.undoBtn.addEventListener('click', strokeUndo);
+els.redoBtn.addEventListener('click', strokeRedo);
+els.clearMarksBtn.addEventListener('click', clearAllMarks);
 
-els.clearMarksBtn.addEventListener('click', () => {
-  while (marksGroup.children.length) {
-    const mesh = marksGroup.children[0];
-    marksGroup.remove(mesh);
-    mesh.geometry?.dispose?.();
-    mesh.material?.dispose?.();
-  }
-  els.undoBtn.disabled = true;
-  els.clearMarksBtn.disabled = true;
+els.viewCube?.addEventListener('click', (ev) => {
+  const button = ev.target.closest('button[data-view]');
+  if (!button) return;
+  snapView(button.dataset.view);
 });
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
-  if (mode === 'pick') {
+  if (mode === 'pickFace' || mode === 'pickBottom' || mode === 'pickFront') {
     const point = intersectBase(ev);
     if (!point) return;
+
     pickPoints.push(point.clone());
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(0.8, 16, 16),
@@ -377,13 +575,18 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     scene.add(marker);
 
     if (pickPoints.length === 3) {
-      calculateFaceFrame();
-      setMode('draw');
-      setStatus('Face defined. Draw or type on that plane.');
-      debugLog('face plane selected', {
-        origin: pickPoints[0].toArray().map((v) => Number(v.toFixed(3))),
-        normal: faceNormal.toArray().map((v) => Number(v.toFixed(5)))
-      });
+      if (mode === 'pickFace') {
+        calculateFaceFrame();
+        clearPickMarkers();
+        setMode('draw');
+        setStatus('Face defined. Draw or type on that plane.');
+        debugLog('face plane selected', {
+          origin: faceOrigin.toArray().map((v) => Number(v.toFixed(3))),
+          normal: faceNormal.toArray().map((v) => Number(v.toFixed(5)))
+        });
+      } else {
+        finishReferencePick();
+      }
     }
     return;
   }
@@ -392,6 +595,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     const point = intersectPlane(ev);
     if (!point) return;
     isDrawing = true;
+    beginStroke();
     lastDrawPoint = point.clone();
     createInsetDot(point);
     return;
@@ -400,7 +604,9 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (mode === 'text') {
     const point = intersectPlane(ev);
     if (!point) return;
+    beginStroke();
     createInsetText(point);
+    commitStroke();
   }
 });
 
@@ -411,6 +617,7 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
   drawInterpolatedDots(point);
 });
 window.addEventListener('pointerup', () => {
+  if (isDrawing) commitStroke();
   isDrawing = false;
   lastDrawPoint = null;
 });
@@ -451,6 +658,7 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+updateActionButtons();
 debugLog('app initialized');
 
 (function render() {
