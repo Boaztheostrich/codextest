@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+import { computeAlignmentQuaternion, applyAlignmentQuaternion } from './orientation.js';
 
 const EXTRUSION_DEPTH_MM = 0.4;
 const PALETTE = ['#ff5a5a', '#4ecdc4', '#ffe66d', '#9f7aea'];
@@ -325,23 +326,13 @@ function computeOutwardNormal(a, b, c) {
 function tryApplyOrientationFromReferences() {
   if (!baseMesh || !bottomRef || !frontRef) return;
 
-  const down = bottomRef.normal.clone().normalize();
-  const up = down.clone().negate();
-
-  const frontProjected = frontRef.normal.clone().sub(down.clone().multiplyScalar(frontRef.normal.dot(down)));
-  if (frontProjected.lengthSq() < 1e-8) {
+  const rotation = computeAlignmentQuaternion(bottomRef.normal, frontRef.normal);
+  if (!rotation) {
     setStatus('Front reference is too parallel to bottom. Pick a different front plane.');
     return;
   }
 
-  const front = frontProjected.normalize();
-  const right = new THREE.Vector3().crossVectors(up, front).normalize();
-
-  const sourceBasis = new THREE.Matrix4().makeBasis(right, up, front);
-  const rotation = new THREE.Quaternion().setFromRotationMatrix(sourceBasis).invert();
-
-  baseMesh.applyQuaternion(rotation);
-  marksGroup.applyQuaternion(rotation);
+  applyAlignmentQuaternion(baseMesh, marksGroup, rotation);
 
   const alignedBounds = new THREE.Box3().setFromObject(baseMesh);
   alignedBounds.getCenter(baseBoundsCenter);
