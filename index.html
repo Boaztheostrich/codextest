@@ -33,6 +33,14 @@
         </div>
       </div>
 
+      <div class="field">
+        <span>Orientation refs</span>
+        <div class="row">
+          <button id="pickBottomBtn" disabled>Set bottom (3 points)</button>
+          <button id="pickFrontBtn" disabled>Set front (3 points)</button>
+        </div>
+      </div>
+
       <label class="field">
         <span>Text</span>
         <input id="textInput" type="text" maxlength="32" value="TEXT" />
@@ -46,6 +54,7 @@
       <div class="field checkbox-field">
         <span>Camera</span>
         <label class="checkbox-option"><input id="lockRotation" type="checkbox" /> Lock rotation while editing</label>
+        <label class="checkbox-option"><input id="showFacePlane" type="checkbox" checked /> Show selected face plane</label>
       </div>
 
       <div class="field">
@@ -54,8 +63,22 @@
       </div>
 
       <div class="row">
-        <button id="undoBtn" disabled>Undo last mark</button>
+        <button id="undoBtn" disabled>Undo stroke</button>
+        <button id="redoBtn" disabled>Redo stroke</button>
         <button id="clearMarksBtn" disabled>Clear marks</button>
+      </div>
+
+      <div class="field">
+        <span>Viewcube</span>
+        <div id="viewCube" class="viewcube">
+          <button data-view="top">Top</button>
+          <button data-view="front">Front</button>
+          <button data-view="right">Right</button>
+          <button data-view="left">Left</button>
+          <button data-view="back">Back</button>
+          <button data-view="bottom">Bottom</button>
+          <button data-view="iso">Iso</button>
+        </div>
       </div>
 
       <button id="exportBtn" disabled>Export .3mf</button>
