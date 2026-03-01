@@ -12,6 +12,7 @@ const els = {
   canvas: document.getElementById('viewport'),
   stlInput: document.getElementById('stlInput'),
   pickFaceBtn: document.getElementById('pickFaceBtn'),
+  autoFaceBtn: document.getElementById('autoFaceBtn'),
   pickBottomBtn: document.getElementById('pickBottomBtn'),
   pickFrontBtn: document.getElementById('pickFrontBtn'),
   drawBtn: document.getElementById('drawBtn'),
@@ -162,6 +163,7 @@ function clearDebugLog() {
 function updateActionButtons() {
   const readyToMark = !!baseMesh && !!facePlane;
   const readyToRef = !!baseMesh;
+  if (els.autoFaceBtn) els.autoFaceBtn.disabled = !baseMesh;
   els.drawBtn.disabled = !readyToMark;
   els.textBtn.disabled = !readyToMark;
   els.pickBottomBtn.disabled = !readyToRef;
@@ -277,6 +279,8 @@ function setBaseMesh(geometry) {
 
   els.exportBtn.disabled = false;
   setMode('pickFace');
+  if (els.autoFaceBtn) els.autoFaceBtn.disabled = false;
+  autoSelectLargestFlatSurface();
 }
 
 function drawReferenceHelper(origin, normal, color) {
@@ -294,15 +298,22 @@ function updateFaceHelperVisibility() {
   if (faceHelper) faceHelper.visible = !!els.showFacePlane?.checked;
 }
 
-function calculateFaceFrame() {
-  const [a, b, c] = pickPoints;
-  const ab = new THREE.Vector3().subVectors(b, a);
-  const ac = new THREE.Vector3().subVectors(c, a);
-  faceNormal = new THREE.Vector3().crossVectors(ab, ac).normalize();
-  faceXAxis = ab.lengthSq() > 1e-8 ? ab.clone().normalize() : new THREE.Vector3(1, 0, 0);
+function applyFaceSelection(normal, origin, xAxisHint) {
+  faceNormal = normal.clone().normalize();
+
+  let xAxis = xAxisHint?.clone() || new THREE.Vector3(1, 0, 0);
+  xAxis = xAxis.sub(faceNormal.clone().multiplyScalar(xAxis.dot(faceNormal)));
+  if (xAxis.lengthSq() < 1e-8) {
+    xAxis = new THREE.Vector3(1, 0, 0).sub(faceNormal.clone().multiplyScalar(faceNormal.x));
+  }
+  if (xAxis.lengthSq() < 1e-8) {
+    xAxis = new THREE.Vector3(0, 1, 0).sub(faceNormal.clone().multiplyScalar(faceNormal.y));
+  }
+
+  faceXAxis = xAxis.normalize();
   faceYAxis = new THREE.Vector3().crossVectors(faceNormal, faceXAxis).normalize();
 
-  faceOrigin = a.clone();
+  faceOrigin = origin.clone();
   facePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(faceNormal, faceOrigin);
   insetNormal = faceNormal.dot(new THREE.Vector3().subVectors(baseBoundsCenter, faceOrigin)) >= 0
     ? faceNormal.clone()
@@ -312,6 +323,116 @@ function calculateFaceFrame() {
   faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff);
   faceHelperSize = THREE.MathUtils.clamp(baseMaxDimension * 0.75, 16, 400);
   updateFaceHelperVisibility();
+}
+
+function calculateFaceFrame() {
+  const [a, b, c] = pickPoints;
+  const ab = new THREE.Vector3().subVectors(b, a);
+  const ac = new THREE.Vector3().subVectors(c, a);
+  const normal = new THREE.Vector3().crossVectors(ab, ac).normalize();
+  applyFaceSelection(normal, a, ab);
+}
+
+function findLargestFlatSurfaceSelection() {
+  if (!baseMesh) return null;
+
+  const pos = baseMesh.geometry?.attributes?.position;
+  if (!pos || pos.count < 3) return null;
+
+  const angleToleranceCos = Math.cos(THREE.MathUtils.degToRad(6));
+  const planeTolerance = Math.max(baseMaxDimension * 0.003, 0.25);
+  const clusters = [];
+
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1);
+    c.fromBufferAttribute(pos, i + 2);
+
+    ab.subVectors(b, a);
+    ac.subVectors(c, a);
+    const triNormal = new THREE.Vector3().crossVectors(ab, ac);
+    const triArea = triNormal.length() * 0.5;
+    if (triArea < 1e-4) continue;
+    triNormal.normalize();
+
+    const planeD = triNormal.dot(a);
+    const triCentroid = new THREE.Vector3().add(a).add(b).add(c).multiplyScalar(1 / 3);
+
+    let cluster = null;
+    for (const candidate of clusters) {
+      if (candidate.normal.dot(triNormal) < angleToleranceCos) continue;
+      if (Math.abs(candidate.planeD - planeD) > planeTolerance) continue;
+      cluster = candidate;
+      break;
+    }
+
+    if (!cluster) {
+      const edgeHint = ab.lengthSq() > ac.lengthSq() ? ab.clone() : ac.clone();
+      cluster = {
+        area: 0,
+        planeD: planeD,
+        normal: triNormal.clone(),
+        normalSum: new THREE.Vector3(),
+        centroidSum: new THREE.Vector3(),
+        axisHint: edgeHint
+      };
+      clusters.push(cluster);
+    }
+
+    cluster.area += triArea;
+    cluster.normalSum.addScaledVector(triNormal, triArea);
+    cluster.centroidSum.addScaledVector(triCentroid, triArea);
+    cluster.planeD = (cluster.planeD * (cluster.area - triArea) + planeD * triArea) / cluster.area;
+  }
+
+  if (!clusters.length) return null;
+
+  clusters.forEach((cluster) => {
+    cluster.normal = cluster.normalSum.clone().normalize();
+  });
+
+  clusters.sort((lhs, rhs) => rhs.area - lhs.area);
+  const best = clusters[0];
+  if (!best || best.area < 1) return null;
+
+  const origin = best.centroidSum.clone().multiplyScalar(1 / best.area);
+  return {
+    normal: best.normal,
+    origin,
+    axisHint: best.axisHint,
+    area: best.area
+  };
+}
+
+function autoSelectLargestFlatSurface() {
+  const selection = findLargestFlatSurfaceSelection();
+  if (!selection) {
+    setStatus('Unable to auto-detect a flat face. Pick 3 points manually.');
+    return false;
+  }
+
+  clearFaceSelection();
+  applyFaceSelection(selection.normal, selection.origin, selection.axisHint);
+
+  removeMeshFromScene(frontHelper);
+  frontRef = { normal: faceNormal.clone(), origin: faceOrigin.clone() };
+  frontHelper = drawReferenceHelper(faceOrigin, faceNormal, 0xf1c40f);
+
+  debugLog('auto face/front selected', {
+    area: Number(selection.area.toFixed(3)),
+    origin: faceOrigin.toArray().map((v) => Number(v.toFixed(3))),
+    normal: faceNormal.toArray().map((v) => Number(v.toFixed(5)))
+  });
+
+  setMode('draw');
+  setStatus('Auto-selected largest flat face as drawing + front plane.');
+  return true;
 }
 
 function computeOutwardNormal(a, b, c) {
@@ -400,6 +521,57 @@ function intersectPlane(event) {
   return out;
 }
 
+function raycastFromPoint(origin, direction) {
+  if (!baseMesh) return null;
+
+  raycaster.set(origin, direction.clone().normalize());
+  const hit = raycaster.intersectObject(baseMesh, true)[0];
+  if (!hit) return null;
+
+  const worldNormal = hit.face?.normal
+    ? hit.face.normal.clone().transformDirection(baseMesh.matrixWorld).normalize()
+    : null;
+
+  return {
+    point: hit.point.clone(),
+    normal: worldNormal,
+    distance: hit.point.distanceTo(origin)
+  };
+}
+
+function projectPlanePointToSurface(planePoint) {
+  if (!baseMesh) return null;
+
+  const probeDistance = Math.max(baseMaxDimension * 2.2, 20);
+  const alongInset = insetNormal.clone().normalize();
+  const reverseInset = alongInset.clone().negate();
+
+  const forwardOrigin = planePoint.clone().add(reverseInset.clone().multiplyScalar(probeDistance));
+  const backwardOrigin = planePoint.clone().add(alongInset.clone().multiplyScalar(probeDistance));
+
+  const hits = [
+    raycastFromPoint(forwardOrigin, alongInset),
+    raycastFromPoint(backwardOrigin, reverseInset)
+  ].filter(Boolean);
+
+  if (!hits.length) return null;
+
+  hits.sort((a, b) => a.point.distanceTo(planePoint) - b.point.distanceTo(planePoint));
+  const bestHit = hits[0];
+
+  let inwardNormal = insetNormal.clone();
+  if (bestHit.normal) {
+    inwardNormal = bestHit.normal.clone();
+    const towardCenter = new THREE.Vector3().subVectors(baseBoundsCenter, bestHit.point);
+    if (inwardNormal.dot(towardCenter) < 0) inwardNormal.negate();
+  }
+
+  return {
+    point: bestHit.point,
+    inwardNormal: inwardNormal.normalize()
+  };
+}
+
 function beginStroke() {
   currentStroke = [];
   redoStack.length = 0;
@@ -419,17 +591,23 @@ function pushMark(mesh) {
 }
 
 function createInsetDot(point) {
+  const projected = projectPlanePointToSurface(point);
+  if (!projected) return;
+
   const radius = Number(els.brushSize.value);
   const geo = new THREE.CylinderGeometry(radius, radius, EXTRUSION_DEPTH_MM, 20);
   const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), insetNormal);
-  const offset = insetNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
-  mesh.position.copy(point).add(offset);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), projected.inwardNormal);
+  const offset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
+  mesh.position.copy(projected.point).add(offset);
   pushMark(mesh);
 }
 
 function createInsetText(point) {
+  const projected = projectPlanePointToSurface(point);
+  if (!projected) return;
+
   if (!loadedFont) {
     setStatus('Font still loading, try again in a moment.');
     return;
@@ -452,8 +630,8 @@ function createInsetText(point) {
 
   const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), insetNormal);
-  mesh.position.copy(point).add(insetNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM));
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), projected.inwardNormal);
+  mesh.position.copy(projected.point).add(projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM));
   pushMark(mesh);
 }
 
@@ -538,7 +716,7 @@ els.stlInput.addEventListener('change', async (ev) => {
     const buffer = await file.arrayBuffer();
     const geometry = stlLoader.parse(buffer);
     setBaseMesh(geometry);
-    setStatus(`Loaded ${file.name}. Pick 3 points on the model.`);
+    setStatus(facePlane ? `Loaded ${file.name}. Auto-selected largest flat face.` : `Loaded ${file.name}. Pick 3 points on the model.`);
   } catch (err) {
     console.error(err);
     setStatus('Failed to load STL. See debug panel for details.');
@@ -550,6 +728,9 @@ els.pickFaceBtn.addEventListener('click', () => {
   clearFaceSelection();
   activePickKind = 'face';
   setMode('pickFace');
+});
+els.autoFaceBtn?.addEventListener('click', () => {
+  autoSelectLargestFlatSurface();
 });
 els.pickBottomBtn.addEventListener('click', () => {
   clearPickMarkers();
@@ -703,6 +884,7 @@ window.addEventListener('resize', resize);
 resize();
 if (els.showGrid) gridHelper.visible = !!els.showGrid.checked;
 if (els.showDebug) els.debug?.classList.toggle('hidden', !els.showDebug.checked);
+if (els.autoFaceBtn) els.autoFaceBtn.disabled = true;
 updateActionButtons();
 debugLog('app initialized');
 
