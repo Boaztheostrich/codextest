@@ -71,6 +71,13 @@ let baseMaxDimension = 80;
 const marksGroup = new THREE.Group();
 marksGroup.name = 'markMeshes';
 scene.add(marksGroup);
+const dotMarkRecords = [];
+const dotPreviewPoints = [];
+const dotPreviewGeometry = new THREE.BufferGeometry();
+const dotPreviewMaterial = new THREE.PointsMaterial({ color: 0xff5a5a, size: 0.9, sizeAttenuation: true });
+const dotPreviewCloud = new THREE.Points(dotPreviewGeometry, dotPreviewMaterial);
+dotPreviewCloud.name = 'dotPreviewCloud';
+scene.add(dotPreviewCloud);
 
 const pickPoints = [];
 let pickMarkers = [];
@@ -97,7 +104,6 @@ const undoStack = [];
 const redoStack = [];
 let currentStroke = null;
 let strokeStartPoint = null;
-let strokeLockAxis = null;
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -184,7 +190,7 @@ function updateActionButtons() {
   els.pickFrontBtn.disabled = !readyToRef;
   els.undoBtn.disabled = undoStack.length === 0;
   els.redoBtn.disabled = redoStack.length === 0;
-  els.clearMarksBtn.disabled = marksGroup.children.length === 0;
+  els.clearMarksBtn.disabled = marksGroup.children.length === 0 && dotMarkRecords.length === 0;
 }
 
 function setMode(next) {
@@ -245,9 +251,19 @@ function logMeshTransform(label, mesh) {
 function resetStrokeState() {
   currentStroke = null;
   strokeStartPoint = null;
-  strokeLockAxis = null;
   undoStack.length = 0;
   redoStack.length = 0;
+}
+
+function refreshDotPreviewGeometry() {
+  const positions = new Float32Array(dotPreviewPoints.length * 3);
+  dotPreviewPoints.forEach((point, idx) => {
+    positions[idx * 3] = point.x;
+    positions[idx * 3 + 1] = point.y;
+    positions[idx * 3 + 2] = point.z;
+  });
+  dotPreviewGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  dotPreviewGeometry.computeBoundingSphere();
 }
 
 function fitCameraToBounds(bounds) {
@@ -272,6 +288,9 @@ function fitCameraToBounds(bounds) {
 }
 
 function clearAllMarks() {
+  dotMarkRecords.length = 0;
+  dotPreviewPoints.length = 0;
+  refreshDotPreviewGeometry();
   while (marksGroup.children.length) {
     const mesh = marksGroup.children[0];
     removeMeshFromScene(mesh);
@@ -684,24 +703,16 @@ function projectPlanePointToSurface(planePoint) {
 }
 
 function beginStroke() {
-  currentStroke = [];
+  currentStroke = { dots: [], previewPoints: [], textMeshes: [] };
   strokeStartPoint = null;
-  strokeLockAxis = null;
   redoStack.length = 0;
   updateActionButtons();
 }
 
 function commitStroke() {
-  if (currentStroke?.length) undoStack.push(currentStroke);
+  if (currentStroke && (currentStroke.dots.length || currentStroke.textMeshes.length)) undoStack.push(currentStroke);
   currentStroke = null;
   strokeStartPoint = null;
-  strokeLockAxis = null;
-  updateActionButtons();
-}
-
-function pushMark(mesh) {
-  marksGroup.add(mesh);
-  if (currentStroke) currentStroke.push(mesh);
   updateActionButtons();
 }
 
@@ -742,16 +753,19 @@ function createInsetDotAtPoint(point) {
   if (!projected) return;
 
   const radius = Number(els.brushSize.value);
-  const geo = new THREE.CylinderGeometry(radius, radius, EXTRUSION_DEPTH_MM, 20);
-  const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), projected.inwardNormal);
-  const insetOffset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
-  const visualLiftOffset = projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM);
-  mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
-  mesh.userData.inwardNormal = projected.inwardNormal.toArray();
-  mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
-  pushMark(mesh);
+  const record = {
+    point: projected.point.clone(),
+    inwardNormal: projected.inwardNormal.clone(),
+    radius,
+    color: activeColor
+  };
+  dotMarkRecords.push(record);
+  if (currentStroke) currentStroke.dots.push(record);
+
+  const previewPoint = projected.point.clone().add(projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM));
+  dotPreviewPoints.push(previewPoint);
+  if (currentStroke) currentStroke.previewPoints.push(previewPoint);
+  refreshDotPreviewGeometry();
 }
 
 function createInsetDot(point) {
@@ -795,7 +809,9 @@ function createInsetText(point) {
     mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
     mesh.userData.inwardNormal = projected.inwardNormal.toArray();
     mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
-    pushMark(mesh);
+    marksGroup.add(mesh);
+    if (currentStroke) currentStroke.textMeshes.push(mesh);
+    updateActionButtons();
   });
 }
 
@@ -803,22 +819,16 @@ function createInsetText(point) {
 let lastDrawPoint = null;
 
 function constrainStrokePoint(point) {
-  if (!els.lockStrokeAxis?.checked || !strokeStartPoint) return point;
+  if (!els.lockStrokeAxis?.checked || !lastDrawPoint) return point;
 
   const local = pointToFaceLocal(point);
-  const startLocal = pointToFaceLocal(strokeStartPoint);
+  const lastLocal = pointToFaceLocal(lastDrawPoint);
+  const dx = Math.abs(local.x - lastLocal.x);
+  const dy = Math.abs(local.y - lastLocal.y);
+  if (Math.max(dx, dy) < 0.1) return point;
 
-  if (!strokeLockAxis) {
-    const dx = Math.abs(local.x - startLocal.x);
-    const dy = Math.abs(local.y - startLocal.y);
-    if (Math.max(dx, dy) < 0.2) return point;
-    strokeLockAxis = dx >= dy ? 'x' : 'y';
-  }
-
-  if (strokeLockAxis === 'x') {
-    return faceLocalToPoint(local.x, startLocal.y);
-  }
-  return faceLocalToPoint(startLocal.x, local.y);
+  if (dx >= dy) return faceLocalToPoint(local.x, lastLocal.y);
+  return faceLocalToPoint(lastLocal.x, local.y);
 }
 
 function drawInterpolatedDots(nextPoint) {
@@ -851,7 +861,14 @@ function strokeUndo() {
   const stroke = undoStack.pop();
   if (!stroke) return;
 
-  for (const mesh of stroke) removeMeshFromScene(mesh);
+  if (stroke.dots.length) {
+    dotMarkRecords.splice(dotMarkRecords.length - stroke.dots.length, stroke.dots.length);
+  }
+  if (stroke.previewPoints.length) {
+    dotPreviewPoints.splice(dotPreviewPoints.length - stroke.previewPoints.length, stroke.previewPoints.length);
+    refreshDotPreviewGeometry();
+  }
+  for (const mesh of stroke.textMeshes) removeMeshFromScene(mesh);
   redoStack.push(stroke);
   updateActionButtons();
 }
@@ -860,7 +877,12 @@ function strokeRedo() {
   const stroke = redoStack.pop();
   if (!stroke) return;
 
-  for (const mesh of stroke) marksGroup.add(mesh);
+  if (stroke.dots.length) dotMarkRecords.push(...stroke.dots);
+  if (stroke.previewPoints.length) {
+    dotPreviewPoints.push(...stroke.previewPoints);
+    refreshDotPreviewGeometry();
+  }
+  for (const mesh of stroke.textMeshes) marksGroup.add(mesh);
   undoStack.push(stroke);
   updateActionButtons();
 }
@@ -1059,6 +1081,15 @@ els.exportBtn.addEventListener('click', async () => {
   const exportRoot = new THREE.Group();
   exportRoot.name = 'stl-face-painter-export';
   exportRoot.add(baseMesh.clone());
+  dotMarkRecords.forEach((mark) => {
+    const geo = new THREE.CylinderGeometry(mark.radius, mark.radius, EXTRUSION_DEPTH_MM, 20);
+    const mat = new THREE.MeshStandardMaterial({ color: mark.color, roughness: 0.55, metalness: 0.05 });
+    const exportMark = new THREE.Mesh(geo, mat);
+    exportMark.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), mark.inwardNormal);
+    const insetOffset = mark.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
+    exportMark.position.copy(mark.point).add(insetOffset);
+    exportRoot.add(exportMark);
+  });
   marksGroup.children.forEach((mark) => {
     const exportMark = mark.clone();
     const inwardNormal = Array.isArray(mark.userData?.inwardNormal)
@@ -1071,7 +1102,7 @@ els.exportBtn.addEventListener('click', async () => {
     exportRoot.add(exportMark);
   });
 
-  debugLog('starting 3mf export', { marks: marksGroup.children.length });
+  debugLog('starting 3mf export', { marks: dotMarkRecords.length + marksGroup.children.length });
   let exportTo3MF;
   try {
     exportTo3MF = await get3MFExportFn();
