@@ -37,6 +37,18 @@ h1 {
   flex-wrap: wrap;
 }
 
+
+.range-with-input {
+  display: grid;
+  grid-template-columns: 1fr 88px;
+  gap: 8px;
+  align-items: center;
+}
+
+.range-with-input input[type="number"] {
+  text-align: right;
+}
+
 input, button {
   background: #1f1f1f;
   border: 1px solid #3a3a3a;
