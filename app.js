@@ -19,6 +19,7 @@ const els = {
   textBtn: document.getElementById('textBtn'),
   textInput: document.getElementById('textInput'),
   brushSize: document.getElementById('brushSize'),
+  planeSize: document.getElementById('planeSize'),
   lockRotation: document.getElementById('lockRotation'),
   showFacePlane: document.getElementById('showFacePlane'),
   showGrid: document.getElementById('showGrid'),
@@ -75,6 +76,7 @@ let faceXAxis = new THREE.Vector3(1, 0, 0);
 let faceYAxis = new THREE.Vector3(0, 1, 0);
 let faceHelperSize = 0;
 let faceHelper = null;
+let desiredPlaneSize = Number(els.planeSize?.value || 120);
 
 let bottomRef = null;
 let frontRef = null;
@@ -212,6 +214,18 @@ function clearOrientationHelpers() {
   frontHelper = null;
 }
 
+function getFaceHelperSize() {
+  return THREE.MathUtils.clamp(Math.max(baseMaxDimension * 0.75, desiredPlaneSize), 16, 400);
+}
+
+function logMeshTransform(label, mesh) {
+  if (!mesh) return;
+  const pos = mesh.position.toArray().map((v) => Number(v.toFixed(3)));
+  const rot = mesh.rotation.toArray().slice(0, 3).map((v) => Number(v.toFixed(5)));
+  const quat = mesh.quaternion.toArray().map((v) => Number(v.toFixed(5)));
+  debugLog(`${label} transform`, { position: pos, rotation: rot, quaternion: quat });
+}
+
 function resetStrokeState() {
   currentStroke = null;
   undoStack.length = 0;
@@ -284,7 +298,7 @@ function setBaseMesh(geometry) {
 }
 
 function drawReferenceHelper(origin, normal, color) {
-  const helperSize = THREE.MathUtils.clamp(baseMaxDimension * 0.75, 16, 400);
+  const helperSize = getFaceHelperSize();
   const helperGeom = new THREE.PlaneGeometry(helperSize, helperSize);
   const helperMat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.14 });
   const helper = new THREE.Mesh(helperGeom, helperMat);
@@ -321,7 +335,7 @@ function applyFaceSelection(normal, origin, xAxisHint) {
 
   removeMeshFromScene(faceHelper);
   faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff);
-  faceHelperSize = THREE.MathUtils.clamp(baseMaxDimension * 0.75, 16, 400);
+  faceHelperSize = getFaceHelperSize();
   updateFaceHelperVisibility();
 }
 
@@ -447,6 +461,12 @@ function computeOutwardNormal(a, b, c) {
 function tryApplyOrientationFromReferences() {
   if (!baseMesh || !bottomRef || !frontRef) return;
 
+  debugLog('applying bottom+front references', {
+    bottomNormal: bottomRef.normal.toArray().map((v) => Number(v.toFixed(5))),
+    frontNormal: frontRef.normal.toArray().map((v) => Number(v.toFixed(5)))
+  });
+  logMeshTransform('base mesh before alignment', baseMesh);
+
   const rotation = computeAlignmentQuaternion(bottomRef.normal, frontRef.normal);
   if (!rotation) {
     setStatus('Front reference is too parallel to bottom. Pick a different front plane.');
@@ -454,9 +474,16 @@ function tryApplyOrientationFromReferences() {
   }
 
   applyAlignmentQuaternion(baseMesh, marksGroup, rotation);
+  logMeshTransform('base mesh after alignment', baseMesh);
 
   const alignedBounds = new THREE.Box3().setFromObject(baseMesh);
   alignedBounds.getCenter(baseBoundsCenter);
+  const alignedSize = alignedBounds.getSize(new THREE.Vector3());
+  baseMaxDimension = Math.max(alignedSize.x, alignedSize.y, alignedSize.z, 1);
+  debugLog('aligned bounds updated', {
+    size: alignedSize.toArray().map((v) => Number(v.toFixed(3))),
+    maxDim: Number(baseMaxDimension.toFixed(3))
+  });
 
   clearFaceSelection();
   clearOrientationHelpers();
@@ -478,11 +505,19 @@ function finishReferencePick() {
     bottomRef = { normal, origin };
     bottomHelper = drawReferenceHelper(origin, normal, 0x2ecc71);
     setStatus('Bottom reference captured. Now set front reference.');
+    debugLog('bottom reference captured', {
+      origin: origin.toArray().map((v) => Number(v.toFixed(3))),
+      normal: normal.toArray().map((v) => Number(v.toFixed(5)))
+    });
   } else if (activePickKind === 'front') {
     removeMeshFromScene(frontHelper);
     frontRef = { normal, origin };
     frontHelper = drawReferenceHelper(origin, normal, 0xf1c40f);
     setStatus('Front reference captured.');
+    debugLog('front reference captured', {
+      origin: origin.toArray().map((v) => Number(v.toFixed(3))),
+      normal: normal.toArray().map((v) => Number(v.toFixed(5)))
+    });
   }
 
   clearPickMarkers();
@@ -754,6 +789,11 @@ els.showGrid?.addEventListener('change', () => {
 els.showDebug?.addEventListener('change', () => {
   els.debug?.classList.toggle('hidden', !els.showDebug.checked);
 });
+els.planeSize?.addEventListener('input', () => {
+  desiredPlaneSize = Number(els.planeSize.value);
+  if (facePlane) applyFaceSelection(faceNormal, faceOrigin, faceXAxis);
+  debugLog('drawing plane size changed', { sizeMm: desiredPlaneSize });
+});
 els.copyLogsBtn?.addEventListener('click', async () => {
   const text = debugLines.join('\n');
   if (!text) {
@@ -788,6 +828,12 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (mode === 'pickFace' || mode === 'pickBottom' || mode === 'pickFront') {
     const point = intersectBase(ev);
     if (!point) return;
+
+    debugLog('surface point picked', {
+      mode,
+      point: point.toArray().map((v) => Number(v.toFixed(3))),
+      pickedCount: pickPoints.length + 1
+    });
 
     pickPoints.push(point.clone());
     const marker = new THREE.Mesh(
