@@ -6,6 +6,7 @@ import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import { computeAlignmentQuaternion, applyAlignmentQuaternion } from './orientation.js';
 
 const EXTRUSION_DEPTH_MM = 0.4;
+const MARK_VISUAL_LIFT_MM = 0.06;
 const PALETTE = ['#ff5a5a', '#4ecdc4', '#ffe66d', '#9f7aea'];
 
 const els = {
@@ -22,6 +23,7 @@ const els = {
   planeSize: document.getElementById('planeSize'),
   lockRotation: document.getElementById('lockRotation'),
   showFacePlane: document.getElementById('showFacePlane'),
+  showFrontPlane: document.getElementById('showFrontPlane'),
   showGrid: document.getElementById('showGrid'),
   showDebug: document.getElementById('showDebug'),
   copyLogsBtn: document.getElementById('copyLogsBtn'),
@@ -312,6 +314,10 @@ function updateFaceHelperVisibility() {
   if (faceHelper) faceHelper.visible = !!els.showFacePlane?.checked;
 }
 
+function updateFrontHelperVisibility() {
+  if (frontHelper) frontHelper.visible = !!els.showFrontPlane?.checked;
+}
+
 function applyFaceSelection(normal, origin, xAxisHint) {
   faceNormal = normal.clone().normalize();
 
@@ -437,6 +443,7 @@ function autoSelectLargestFlatSurface() {
   removeMeshFromScene(frontHelper);
   frontRef = { normal: faceNormal.clone(), origin: faceOrigin.clone() };
   frontHelper = drawReferenceHelper(faceOrigin, faceNormal, 0xf1c40f);
+  updateFrontHelperVisibility();
 
   debugLog('auto face/front selected', {
     area: Number(selection.area.toFixed(3)),
@@ -513,6 +520,7 @@ function finishReferencePick() {
     removeMeshFromScene(frontHelper);
     frontRef = { normal, origin };
     frontHelper = drawReferenceHelper(origin, normal, 0xf1c40f);
+    updateFrontHelperVisibility();
     setStatus('Front reference captured.');
     debugLog('front reference captured', {
       origin: origin.toArray().map((v) => Number(v.toFixed(3))),
@@ -634,8 +642,11 @@ function createInsetDot(point) {
   const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), projected.inwardNormal);
-  const offset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
-  mesh.position.copy(projected.point).add(offset);
+  const insetOffset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM * 0.5);
+  const visualLiftOffset = projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM);
+  mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
+  mesh.userData.inwardNormal = projected.inwardNormal.toArray();
+  mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
   pushMark(mesh);
 }
 
@@ -666,7 +677,11 @@ function createInsetText(point) {
   const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), projected.inwardNormal);
-  mesh.position.copy(projected.point).add(projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM));
+  const insetOffset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM);
+  const visualLiftOffset = projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM);
+  mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
+  mesh.userData.inwardNormal = projected.inwardNormal.toArray();
+  mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
   pushMark(mesh);
 }
 
@@ -783,6 +798,7 @@ els.lockRotation?.addEventListener('change', () => {
   controls.enableRotate = !els.lockRotation.checked;
 });
 els.showFacePlane?.addEventListener('change', updateFaceHelperVisibility);
+els.showFrontPlane?.addEventListener('change', updateFrontHelperVisibility);
 els.showGrid?.addEventListener('change', () => {
   gridHelper.visible = !!els.showGrid.checked;
 });
@@ -898,7 +914,17 @@ els.exportBtn.addEventListener('click', async () => {
   const exportRoot = new THREE.Group();
   exportRoot.name = 'stl-face-painter-export';
   exportRoot.add(baseMesh.clone());
-  marksGroup.children.forEach((mark) => exportRoot.add(mark.clone()));
+  marksGroup.children.forEach((mark) => {
+    const exportMark = mark.clone();
+    const inwardNormal = Array.isArray(mark.userData?.inwardNormal)
+      ? new THREE.Vector3().fromArray(mark.userData.inwardNormal)
+      : null;
+    const visualLiftMm = Number(mark.userData?.visualLiftMm || 0);
+    if (inwardNormal && visualLiftMm > 0) {
+      exportMark.position.add(inwardNormal.multiplyScalar(visualLiftMm));
+    }
+    exportRoot.add(exportMark);
+  });
 
   debugLog('starting 3mf export', { marks: marksGroup.children.length });
   let exportTo3MF;
@@ -930,6 +956,7 @@ window.addEventListener('resize', resize);
 resize();
 if (els.showGrid) gridHelper.visible = !!els.showGrid.checked;
 if (els.showDebug) els.debug?.classList.toggle('hidden', !els.showDebug.checked);
+updateFrontHelperVisibility();
 if (els.autoFaceBtn) els.autoFaceBtn.disabled = true;
 updateActionButtons();
 debugLog('app initialized');
