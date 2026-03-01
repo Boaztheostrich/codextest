@@ -21,6 +21,12 @@ const els = {
   textInput: document.getElementById('textInput'),
   brushSize: document.getElementById('brushSize'),
   planeSize: document.getElementById('planeSize'),
+  mirrorX: document.getElementById('mirrorX'),
+  mirrorY: document.getElementById('mirrorY'),
+  showMirrorX: document.getElementById('showMirrorX'),
+  showMirrorY: document.getElementById('showMirrorY'),
+  centerText: document.getElementById('centerText'),
+  lockStrokeAxis: document.getElementById('lockStrokeAxis'),
   lockRotation: document.getElementById('lockRotation'),
   showFacePlane: document.getElementById('showFacePlane'),
   showFrontPlane: document.getElementById('showFrontPlane'),
@@ -78,6 +84,8 @@ let faceXAxis = new THREE.Vector3(1, 0, 0);
 let faceYAxis = new THREE.Vector3(0, 1, 0);
 let faceHelperSize = 0;
 let faceHelper = null;
+let mirrorXHelper = null;
+let mirrorYHelper = null;
 let desiredPlaneSize = Number(els.planeSize?.value || 120);
 
 let bottomRef = null;
@@ -88,6 +96,8 @@ let frontHelper = null;
 const undoStack = [];
 const redoStack = [];
 let currentStroke = null;
+let strokeStartPoint = null;
+let strokeLockAxis = null;
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -203,7 +213,11 @@ function clearPickMarkers() {
 function clearFaceSelection() {
   clearPickMarkers();
   removeMeshFromScene(faceHelper);
+  removeMeshFromScene(mirrorXHelper);
+  removeMeshFromScene(mirrorYHelper);
   faceHelper = null;
+  mirrorXHelper = null;
+  mirrorYHelper = null;
   facePlane = null;
   faceHelperSize = 0;
   updateActionButtons();
@@ -230,6 +244,8 @@ function logMeshTransform(label, mesh) {
 
 function resetStrokeState() {
   currentStroke = null;
+  strokeStartPoint = null;
+  strokeLockAxis = null;
   undoStack.length = 0;
   redoStack.length = 0;
 }
@@ -318,6 +334,42 @@ function updateFrontHelperVisibility() {
   if (frontHelper) frontHelper.visible = !!els.showFrontPlane?.checked;
 }
 
+function updateMirrorHelperVisibility() {
+  if (mirrorXHelper) mirrorXHelper.visible = !!els.showMirrorX?.checked;
+  if (mirrorYHelper) mirrorYHelper.visible = !!els.showMirrorY?.checked;
+}
+
+function getMirrorPoints() {
+  if (!faceOrigin || !faceXAxis || !faceYAxis || !faceHelperSize) return null;
+  const half = faceHelperSize * 0.5;
+  return {
+    xStart: faceOrigin.clone().add(faceYAxis.clone().multiplyScalar(-half)),
+    xEnd: faceOrigin.clone().add(faceYAxis.clone().multiplyScalar(half)),
+    yStart: faceOrigin.clone().add(faceXAxis.clone().multiplyScalar(-half)),
+    yEnd: faceOrigin.clone().add(faceXAxis.clone().multiplyScalar(half))
+  };
+}
+
+function buildMirrorHelpers() {
+  removeMeshFromScene(mirrorXHelper);
+  removeMeshFromScene(mirrorYHelper);
+  mirrorXHelper = null;
+  mirrorYHelper = null;
+
+  const pts = getMirrorPoints();
+  if (!pts) return;
+
+  const xGeom = new THREE.BufferGeometry().setFromPoints([pts.xStart, pts.xEnd]);
+  const yGeom = new THREE.BufferGeometry().setFromPoints([pts.yStart, pts.yEnd]);
+
+  mirrorXHelper = new THREE.Line(xGeom, new THREE.LineBasicMaterial({ color: 0xff6666 }));
+  mirrorYHelper = new THREE.Line(yGeom, new THREE.LineBasicMaterial({ color: 0x66ff66 }));
+
+  scene.add(mirrorXHelper);
+  scene.add(mirrorYHelper);
+  updateMirrorHelperVisibility();
+}
+
 function applyFaceSelection(normal, origin, xAxisHint) {
   faceNormal = normal.clone().normalize();
 
@@ -342,6 +394,7 @@ function applyFaceSelection(normal, origin, xAxisHint) {
   removeMeshFromScene(faceHelper);
   faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff);
   faceHelperSize = getFaceHelperSize();
+  buildMirrorHelpers();
   updateFaceHelperVisibility();
 }
 
@@ -617,6 +670,8 @@ function projectPlanePointToSurface(planePoint) {
 
 function beginStroke() {
   currentStroke = [];
+  strokeStartPoint = null;
+  strokeLockAxis = null;
   redoStack.length = 0;
   updateActionButtons();
 }
@@ -624,6 +679,8 @@ function beginStroke() {
 function commitStroke() {
   if (currentStroke?.length) undoStack.push(currentStroke);
   currentStroke = null;
+  strokeStartPoint = null;
+  strokeLockAxis = null;
   updateActionButtons();
 }
 
@@ -633,7 +690,39 @@ function pushMark(mesh) {
   updateActionButtons();
 }
 
-function createInsetDot(point) {
+function pointToFaceLocal(point) {
+  const rel = new THREE.Vector3().subVectors(point, faceOrigin);
+  return {
+    x: rel.dot(faceXAxis),
+    y: rel.dot(faceYAxis)
+  };
+}
+
+function faceLocalToPoint(x, y) {
+  return faceOrigin.clone()
+    .add(faceXAxis.clone().multiplyScalar(x))
+    .add(faceYAxis.clone().multiplyScalar(y));
+}
+
+function mirroredFacePoints(point) {
+  const local = pointToFaceLocal(point);
+  const variants = [
+    { x: local.x, y: local.y },
+    ...(els.mirrorX?.checked ? [{ x: local.x, y: -local.y }] : []),
+    ...(els.mirrorY?.checked ? [{ x: -local.x, y: local.y }] : []),
+    ...(els.mirrorX?.checked && els.mirrorY?.checked ? [{ x: -local.x, y: -local.y }] : [])
+  ];
+
+  const unique = new Map();
+  for (const variant of variants) {
+    const key = `${variant.x.toFixed(4)}:${variant.y.toFixed(4)}`;
+    if (!unique.has(key)) unique.set(key, variant);
+  }
+
+  return [...unique.values()].map((v) => faceLocalToPoint(v.x, v.y));
+}
+
+function createInsetDotAtPoint(point) {
   const projected = projectPlanePointToSurface(point);
   if (!projected) return;
 
@@ -650,9 +739,12 @@ function createInsetDot(point) {
   pushMark(mesh);
 }
 
+function createInsetDot(point) {
+  mirroredFacePoints(point).forEach((variantPoint) => createInsetDotAtPoint(variantPoint));
+}
+
 function createInsetText(point) {
-  const projected = projectPlanePointToSurface(point);
-  if (!projected) return;
+  const sourcePoint = els.centerText?.checked ? faceOrigin.clone() : point;
 
   if (!loadedFont) {
     setStatus('Font still loading, try again in a moment.');
@@ -661,40 +753,69 @@ function createInsetText(point) {
   const text = els.textInput.value.trim();
   if (!text) return;
 
-  const geo = new TextGeometry(text, {
+  const templateGeo = new TextGeometry(text, {
     font: loadedFont,
     size: Math.max(1.5, Number(els.brushSize.value) * 2.2),
     depth: EXTRUSION_DEPTH_MM,
     curveSegments: 10,
     bevelEnabled: false
   });
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox;
+  templateGeo.computeBoundingBox();
+  const bb = templateGeo.boundingBox;
   const width = bb.max.x - bb.min.x;
   const height = bb.max.y - bb.min.y;
-  geo.translate(-width / 2, -height / 2, 0);
+  templateGeo.translate(-width / 2, -height / 2, 0);
 
-  const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), projected.inwardNormal);
-  const insetOffset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM);
-  const visualLiftOffset = projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM);
-  mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
-  mesh.userData.inwardNormal = projected.inwardNormal.toArray();
-  mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
-  pushMark(mesh);
+  const textPoints = mirroredFacePoints(sourcePoint);
+  textPoints.forEach((variantPoint, idx) => {
+    const projected = projectPlanePointToSurface(variantPoint);
+    if (!projected) return;
+
+    const mat = new THREE.MeshStandardMaterial({ color: activeColor, roughness: 0.55, metalness: 0.05 });
+    const geo = idx === 0 ? templateGeo : templateGeo.clone();
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), projected.inwardNormal);
+    const insetOffset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM);
+    const visualLiftOffset = projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM);
+    mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
+    mesh.userData.inwardNormal = projected.inwardNormal.toArray();
+    mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
+    pushMark(mesh);
+  });
 }
+
 
 let lastDrawPoint = null;
 
+function constrainStrokePoint(point) {
+  if (!els.lockStrokeAxis?.checked || !strokeStartPoint) return point;
+
+  const local = pointToFaceLocal(point);
+  const startLocal = pointToFaceLocal(strokeStartPoint);
+
+  if (!strokeLockAxis) {
+    const dx = Math.abs(local.x - startLocal.x);
+    const dy = Math.abs(local.y - startLocal.y);
+    if (Math.max(dx, dy) < 0.2) return point;
+    strokeLockAxis = dx >= dy ? 'x' : 'y';
+  }
+
+  if (strokeLockAxis === 'x') {
+    return faceLocalToPoint(local.x, startLocal.y);
+  }
+  return faceLocalToPoint(startLocal.x, local.y);
+}
+
 function drawInterpolatedDots(nextPoint) {
+  const constrainedPoint = constrainStrokePoint(nextPoint);
+
   if (!lastDrawPoint) {
-    createInsetDot(nextPoint);
-    lastDrawPoint = nextPoint.clone();
+    createInsetDot(constrainedPoint);
+    lastDrawPoint = constrainedPoint.clone();
     return;
   }
 
-  const delta = new THREE.Vector3().subVectors(nextPoint, lastDrawPoint);
+  const delta = new THREE.Vector3().subVectors(constrainedPoint, lastDrawPoint);
   const distance = delta.length();
   const step = Math.max(0.12, Number(els.brushSize.value) * 0.3);
   if (distance < step * 0.4) return;
@@ -707,8 +828,8 @@ function drawInterpolatedDots(nextPoint) {
     traveled += step;
   }
 
-  createInsetDot(nextPoint);
-  lastDrawPoint = nextPoint.clone();
+  createInsetDot(constrainedPoint);
+  lastDrawPoint = constrainedPoint.clone();
 }
 
 function strokeUndo() {
@@ -727,6 +848,13 @@ function strokeRedo() {
   for (const mesh of stroke) marksGroup.add(mesh);
   undoStack.push(stroke);
   updateActionButtons();
+}
+
+async function loadSTLFromArrayBuffer(arrayBuffer, sourceName = 'STL') {
+  const geometry = stlLoader.parse(arrayBuffer);
+  setBaseMesh(geometry);
+  snapView('front');
+  setStatus(facePlane ? `Loaded ${sourceName}. Auto-selected largest flat face.` : `Loaded ${sourceName}. Pick 3 points on the model.`);
 }
 
 function snapView(viewName) {
@@ -764,9 +892,7 @@ els.stlInput.addEventListener('change', async (ev) => {
   try {
     debugLog('loading STL', { name: file.name, sizeBytes: file.size });
     const buffer = await file.arrayBuffer();
-    const geometry = stlLoader.parse(buffer);
-    setBaseMesh(geometry);
-    setStatus(facePlane ? `Loaded ${file.name}. Auto-selected largest flat face.` : `Loaded ${file.name}. Pick 3 points on the model.`);
+    await loadSTLFromArrayBuffer(buffer, file.name);
   } catch (err) {
     console.error(err);
     setStatus('Failed to load STL. See debug panel for details.');
@@ -799,6 +925,8 @@ els.lockRotation?.addEventListener('change', () => {
 });
 els.showFacePlane?.addEventListener('change', updateFaceHelperVisibility);
 els.showFrontPlane?.addEventListener('change', updateFrontHelperVisibility);
+els.showMirrorX?.addEventListener('change', updateMirrorHelperVisibility);
+els.showMirrorY?.addEventListener('change', updateMirrorHelperVisibility);
 els.showGrid?.addEventListener('change', () => {
   gridHelper.visible = !!els.showGrid.checked;
 });
@@ -882,8 +1010,10 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     if (!point) return;
     isDrawing = true;
     beginStroke();
-    lastDrawPoint = point.clone();
-    createInsetDot(point);
+    strokeStartPoint = point.clone();
+    const constrainedStart = constrainStrokePoint(point);
+    lastDrawPoint = constrainedStart.clone();
+    createInsetDot(constrainedStart);
     return;
   }
 
@@ -956,10 +1086,25 @@ window.addEventListener('resize', resize);
 resize();
 if (els.showGrid) gridHelper.visible = !!els.showGrid.checked;
 if (els.showDebug) els.debug?.classList.toggle('hidden', !els.showDebug.checked);
+if (els.lockRotation) controls.enableRotate = !els.lockRotation.checked;
 updateFrontHelperVisibility();
+updateMirrorHelperVisibility();
 if (els.autoFaceBtn) els.autoFaceBtn.disabled = true;
 updateActionButtons();
 debugLog('app initialized');
+
+(async function loadDefaultSTL() {
+  try {
+    debugLog('loading default STL', { name: 'blank_face_v0.stl' });
+    const res = await fetch('./blank_face_v0.stl');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    await loadSTLFromArrayBuffer(buffer, 'blank_face_v0.stl');
+  } catch (err) {
+    debugLog('default stl load failure', { error: String(err) });
+    setStatus('Load an STL to begin.');
+  }
+})();
 
 (function render() {
   requestAnimationFrame(render);
