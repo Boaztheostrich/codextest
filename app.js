@@ -748,6 +748,7 @@ function setBrushRadius(value) {
   const formatted = radius.toFixed(1);
   if (els.brushSize) els.brushSize.value = formatted;
   if (els.brushSizeNumber) els.brushSizeNumber.value = formatted;
+  dotPreviewMaterial.size = Math.max(0.3, radius * 2);
 }
 
 function isTypingTarget(target) {
