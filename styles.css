@@ -124,6 +124,16 @@ main {
   margin: 0;
 }
 
+.nested-field {
+  margin: 4px 0 0 26px;
+}
+
+.nested-field span {
+  font-size: 0.82rem;
+  color: #bdbdbd;
+}
+
+
 .viewcube {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
