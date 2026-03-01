@@ -21,6 +21,7 @@ const els = {
   textBtn: document.getElementById('textBtn'),
   textInput: document.getElementById('textInput'),
   brushSize: document.getElementById('brushSize'),
+  brushSizeNumber: document.getElementById('brushSizeNumber'),
   planeSize: document.getElementById('planeSize'),
   mirrorX: document.getElementById('mirrorX'),
   mirrorY: document.getElementById('mirrorY'),
@@ -729,7 +730,31 @@ function commitStroke() {
 }
 
 function getAxisLockSwitchFactor() {
-  return Number(els.axisLockSensitivity?.value || AXIS_LOCK_SWITCH_FACTOR_DEFAULT);
+  return THREE.MathUtils.clamp(
+    Number(els.axisLockSensitivity?.value || AXIS_LOCK_SWITCH_FACTOR_DEFAULT),
+    1,
+    12
+  );
+}
+
+function normalizeBrushRadius(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Number(els.brushSize?.value || 0.8);
+  return THREE.MathUtils.clamp(numeric, 0.2, 3);
+}
+
+function setBrushRadius(value) {
+  const radius = normalizeBrushRadius(value);
+  const formatted = radius.toFixed(1);
+  if (els.brushSize) els.brushSize.value = formatted;
+  if (els.brushSizeNumber) els.brushSizeNumber.value = formatted;
+}
+
+function isTypingTarget(target) {
+  if (!target) return false;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true;
+  if (target instanceof HTMLElement && target.isContentEditable) return true;
+  return false;
 }
 
 function pointToFaceLocal(point) {
@@ -1000,6 +1025,15 @@ els.planeSize?.addEventListener('input', () => {
   if (facePlane) applyFaceSelection(faceNormal, faceOrigin);
   debugLog('drawing plane size changed', { sizeMm: desiredPlaneSize });
 });
+els.brushSize?.addEventListener('input', () => {
+  setBrushRadius(els.brushSize.value);
+});
+els.brushSizeNumber?.addEventListener('input', () => {
+  setBrushRadius(els.brushSizeNumber.value);
+});
+els.brushSizeNumber?.addEventListener('blur', () => {
+  setBrushRadius(els.brushSizeNumber.value);
+});
 els.copyLogsBtn?.addEventListener('click', async () => {
   const text = debugLines.join('\n');
   if (!text) {
@@ -1028,6 +1062,27 @@ els.viewCube?.addEventListener('click', (ev) => {
   const button = ev.target.closest('button[data-view]');
   if (!button) return;
   snapView(button.dataset.view);
+});
+
+window.addEventListener('keydown', (ev) => {
+  if (isTypingTarget(ev.target)) return;
+
+  const mod = ev.ctrlKey || ev.metaKey;
+  if (!mod) return;
+
+  const key = ev.key.toLowerCase();
+  if (key === 'z' && !ev.shiftKey) {
+    ev.preventDefault();
+    strokeUndo();
+  }
+  if (key === 'z' && ev.shiftKey) {
+    ev.preventDefault();
+    strokeRedo();
+  }
+  if (key === 'y') {
+    ev.preventDefault();
+    strokeRedo();
+  }
 });
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
@@ -1160,6 +1215,7 @@ resize();
 if (els.showGrid) gridHelper.visible = !!els.showGrid.checked;
 if (els.showDebug) els.debug?.classList.toggle('hidden', !els.showDebug.checked);
 if (els.lockRotation) controls.enableRotate = !els.lockRotation.checked;
+setBrushRadius(els.brushSize?.value || 0.8);
 updateFrontHelperVisibility();
 updateMirrorHelperVisibility();
 if (els.autoFaceBtn) els.autoFaceBtn.disabled = true;
