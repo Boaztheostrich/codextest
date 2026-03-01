@@ -12,6 +12,9 @@ const AXIS_LOCK_SWITCH_FACTOR_DEFAULT = 1.6;
 
 const els = {
   canvas: document.getElementById('viewport'),
+  main: document.querySelector('main'),
+  panel: document.getElementById('sidebar'),
+  panelToggle: document.getElementById('panelToggle'),
   stlInput: document.getElementById('stlInput'),
   pickFaceBtn: document.getElementById('pickFaceBtn'),
   autoFaceBtn: document.getElementById('autoFaceBtn'),
@@ -1188,9 +1191,30 @@ els.exportBtn.addEventListener('click', async () => {
   debugLog('3mf export complete');
 });
 
+function updatePanelToggleLabel() {
+  if (!els.panelToggle) return;
+  const hidden = document.body.classList.contains('panel-hidden');
+  els.panelToggle.textContent = hidden ? 'Show sidebar' : 'Hide sidebar';
+  els.panelToggle.setAttribute('aria-expanded', String(!hidden));
+}
+
+function setPanelHidden(hidden) {
+  document.body.classList.toggle('panel-hidden', hidden);
+  updatePanelToggleLabel();
+  resize();
+}
+
+if (window.matchMedia('(max-width: 900px)').matches) {
+  document.body.classList.add('panel-hidden');
+}
+updatePanelToggleLabel();
+els.panelToggle?.addEventListener('click', () => {
+  setPanelHidden(!document.body.classList.contains('panel-hidden'));
+});
+
 function resize() {
-  const w = window.innerWidth - 340;
-  const h = window.innerHeight;
+  const w = Math.max(1, Math.floor(els.main?.clientWidth || window.innerWidth));
+  const h = Math.max(1, Math.floor(els.main?.clientHeight || window.innerHeight));
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
