@@ -75,12 +75,6 @@ const marksGroup = new THREE.Group();
 marksGroup.name = 'markMeshes';
 scene.add(marksGroup);
 const dotMarkRecords = [];
-const dotPreviewPoints = [];
-const dotPreviewGeometry = new THREE.BufferGeometry();
-const dotPreviewMaterial = new THREE.PointsMaterial({ color: 0xff5a5a, size: 0.9, sizeAttenuation: true });
-const dotPreviewCloud = new THREE.Points(dotPreviewGeometry, dotPreviewMaterial);
-dotPreviewCloud.name = 'dotPreviewCloud';
-scene.add(dotPreviewCloud);
 
 const pickPoints = [];
 let pickMarkers = [];
@@ -215,6 +209,11 @@ function removeMeshFromScene(mesh) {
   mesh.material?.dispose?.();
 }
 
+function detachMeshFromScene(mesh) {
+  if (!mesh) return;
+  mesh.parent?.remove(mesh);
+}
+
 function clearPickMarkers() {
   pickPoints.length = 0;
   pickMarkers.forEach((m) => removeMeshFromScene(m));
@@ -261,20 +260,6 @@ function resetStrokeState() {
   redoStack.length = 0;
 }
 
-let dotPreviewDirty = false;
-
-function refreshDotPreviewGeometry() {
-  const positions = new Float32Array(dotPreviewPoints.length * 3);
-  dotPreviewPoints.forEach((point, idx) => {
-    positions[idx * 3] = point.x;
-    positions[idx * 3 + 1] = point.y;
-    positions[idx * 3 + 2] = point.z;
-  });
-  dotPreviewGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  dotPreviewGeometry.computeBoundingSphere();
-  dotPreviewDirty = false;
-}
-
 function fitCameraToBounds(bounds) {
   const center = bounds.getCenter(new THREE.Vector3());
   const sizeVec = bounds.getSize(new THREE.Vector3());
@@ -298,8 +283,6 @@ function fitCameraToBounds(bounds) {
 
 function clearAllMarks() {
   dotMarkRecords.length = 0;
-  dotPreviewPoints.length = 0;
-  dotPreviewDirty = true;
   while (marksGroup.children.length) {
     const mesh = marksGroup.children[0];
     removeMeshFromScene(mesh);
@@ -712,7 +695,7 @@ function projectPlanePointToSurface(planePoint) {
 }
 
 function beginStroke() {
-  currentStroke = { dots: [], previewPoints: [], textMeshes: [] };
+  currentStroke = { dots: [], dotMeshes: [], textMeshes: [] };
   strokeStartPoint = null;
   activeStrokeAxis = null;
   pendingDrawEvent = null;
@@ -748,7 +731,6 @@ function setBrushRadius(value) {
   const formatted = radius.toFixed(1);
   if (els.brushSize) els.brushSize.value = formatted;
   if (els.brushSizeNumber) els.brushSizeNumber.value = formatted;
-  dotPreviewMaterial.size = Math.max(0.3, radius * 2);
 }
 
 function isTypingTarget(target) {
@@ -794,7 +776,7 @@ function createInsetDotAtPoint(point) {
   const projected = projectPlanePointToSurface(point);
   if (!projected) return;
 
-  const radius = Number(els.brushSize.value);
+  const radius = normalizeBrushRadius(els.brushSize.value);
   const record = {
     point: projected.point.clone(),
     inwardNormal: projected.inwardNormal.clone(),
@@ -804,10 +786,15 @@ function createInsetDotAtPoint(point) {
   dotMarkRecords.push(record);
   if (currentStroke) currentStroke.dots.push(record);
 
-  const previewPoint = projected.point.clone().add(projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM));
-  dotPreviewPoints.push(previewPoint);
-  if (currentStroke) currentStroke.previewPoints.push(previewPoint);
-  dotPreviewDirty = true;
+  const circleSegments = THREE.MathUtils.clamp(Math.round(radius * 16), 16, 56);
+  const previewGeo = new THREE.CircleGeometry(radius, circleSegments);
+  const previewMat = new THREE.MeshBasicMaterial({ color: activeColor, side: THREE.DoubleSide });
+  const previewMesh = new THREE.Mesh(previewGeo, previewMat);
+  previewMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), projected.inwardNormal);
+  previewMesh.position.copy(projected.point).add(projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM));
+  previewMesh.userData.kind = 'dot';
+  marksGroup.add(previewMesh);
+  if (currentStroke) currentStroke.dotMeshes.push(previewMesh);
 }
 
 function createInsetDot(point) {
@@ -849,6 +836,7 @@ function createInsetText(point) {
     const insetOffset = projected.inwardNormal.clone().multiplyScalar(EXTRUSION_DEPTH_MM);
     const visualLiftOffset = projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM);
     mesh.position.copy(projected.point).add(insetOffset).add(visualLiftOffset);
+    mesh.userData.kind = 'text';
     mesh.userData.inwardNormal = projected.inwardNormal.toArray();
     mesh.userData.visualLiftMm = MARK_VISUAL_LIFT_MM;
     marksGroup.add(mesh);
@@ -893,7 +881,8 @@ function drawInterpolatedDots(nextPoint) {
 
   const delta = new THREE.Vector3().subVectors(constrainedPoint, lastDrawPoint);
   const distance = delta.length();
-  const step = Math.max(0.12, Number(els.brushSize.value) * 0.3);
+  const brushRadius = normalizeBrushRadius(els.brushSize.value);
+  const step = THREE.MathUtils.clamp(brushRadius * 0.18, 0.06, 0.35);
   if (distance < step * 0.4) return;
 
   const direction = delta.normalize();
@@ -915,11 +904,8 @@ function strokeUndo() {
   if (stroke.dots.length) {
     dotMarkRecords.splice(dotMarkRecords.length - stroke.dots.length, stroke.dots.length);
   }
-  if (stroke.previewPoints.length) {
-    dotPreviewPoints.splice(dotPreviewPoints.length - stroke.previewPoints.length, stroke.previewPoints.length);
-    dotPreviewDirty = true;
-  }
-  for (const mesh of stroke.textMeshes) removeMeshFromScene(mesh);
+  for (const mesh of stroke.dotMeshes) detachMeshFromScene(mesh);
+  for (const mesh of stroke.textMeshes) detachMeshFromScene(mesh);
   redoStack.push(stroke);
   updateActionButtons();
 }
@@ -929,10 +915,7 @@ function strokeRedo() {
   if (!stroke) return;
 
   if (stroke.dots.length) dotMarkRecords.push(...stroke.dots);
-  if (stroke.previewPoints.length) {
-    dotPreviewPoints.push(...stroke.previewPoints);
-    dotPreviewDirty = true;
-  }
+  for (const mesh of stroke.dotMeshes) marksGroup.add(mesh);
   for (const mesh of stroke.textMeshes) marksGroup.add(mesh);
   undoStack.push(stroke);
   updateActionButtons();
@@ -1174,6 +1157,7 @@ els.exportBtn.addEventListener('click', async () => {
     exportRoot.add(exportMark);
   });
   marksGroup.children.forEach((mark) => {
+    if (mark.userData?.kind !== 'text') return;
     const exportMark = mark.clone();
     const inwardNormal = Array.isArray(mark.userData?.inwardNormal)
       ? new THREE.Vector3().fromArray(mark.userData.inwardNormal)
@@ -1243,7 +1227,6 @@ debugLog('app initialized');
     pendingDrawEvent = null;
     if (point) drawInterpolatedDots(point);
   }
-  if (dotPreviewDirty) refreshDotPreviewGeometry();
   controls.update();
   renderer.render(scene, camera);
 })();
