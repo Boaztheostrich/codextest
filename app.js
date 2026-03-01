@@ -315,13 +315,24 @@ function setBaseMesh(geometry) {
   autoSelectLargestFlatSurface();
 }
 
-function drawReferenceHelper(origin, normal, color) {
+function drawReferenceHelper(origin, normal, color, xAxis, yAxis) {
   const helperSize = getFaceHelperSize();
   const helperGeom = new THREE.PlaneGeometry(helperSize, helperSize);
   const helperMat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.14 });
   const helper = new THREE.Mesh(helperGeom, helperMat);
   helper.position.copy(origin);
-  helper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+
+  if (xAxis && yAxis) {
+    const frame = new THREE.Matrix4().makeBasis(
+      xAxis.clone().normalize(),
+      yAxis.clone().normalize(),
+      normal.clone().normalize()
+    );
+    helper.quaternion.setFromRotationMatrix(frame);
+  } else {
+    helper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+  }
+
   scene.add(helper);
   return helper;
 }
@@ -392,7 +403,7 @@ function applyFaceSelection(normal, origin, xAxisHint) {
     : faceNormal.clone().negate();
 
   removeMeshFromScene(faceHelper);
-  faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff);
+  faceHelper = drawReferenceHelper(faceOrigin, faceNormal, 0x44aaff, faceXAxis, faceYAxis);
   faceHelperSize = getFaceHelperSize();
   buildMirrorHelpers();
   updateFaceHelperVisibility();
