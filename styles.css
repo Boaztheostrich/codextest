@@ -14,10 +14,29 @@ body {
   color: #f2f2f2;
 }
 
+body.panel-hidden {
+  grid-template-columns: 0 1fr;
+}
+
 .panel {
   border-right: 1px solid #2d2d2d;
   padding: 16px;
   overflow-y: auto;
+}
+
+.panel-toggle {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 20;
+  background: #000b;
+  backdrop-filter: blur(2px);
+}
+
+body.panel-hidden .panel {
+  padding: 0;
+  border-right: 0;
+  overflow: hidden;
 }
 
 h1 {
@@ -164,4 +183,29 @@ main {
 
 .debug.hidden {
   display: none;
+}
+
+@media (max-width: 900px) {
+  body {
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(86vw, 340px);
+    background: #111;
+    z-index: 15;
+    transform: translateX(0);
+    transition: transform 0.2s ease;
+  }
+
+  body.panel-hidden .panel {
+    transform: translateX(-105%);
+    padding: 16px;
+    border-right: 1px solid #2d2d2d;
+    overflow-y: auto;
+  }
 }

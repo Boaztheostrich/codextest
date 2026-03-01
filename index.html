@@ -15,7 +15,11 @@
     </script>
   </head>
   <body>
-    <aside class="panel">
+    <button id="panelToggle" class="panel-toggle" type="button" aria-controls="sidebar" aria-expanded="true">
+      Hide sidebar
+    </button>
+
+    <aside id="sidebar" class="panel">
       <h1>STL Face Painter</h1>
       <p class="hint">Upload an STL, pick 3 points to define a face plane, then draw or type.</p>
 
