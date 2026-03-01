@@ -8,6 +8,7 @@ import { computeAlignmentQuaternion, applyAlignmentQuaternion } from './orientat
 const EXTRUSION_DEPTH_MM = 0.4;
 const MARK_VISUAL_LIFT_MM = 0.06;
 const PALETTE = ['#ff5a5a', '#4ecdc4', '#ffe66d', '#9f7aea'];
+const AXIS_LOCK_SWITCH_FACTOR_DEFAULT = 1.6;
 
 const els = {
   canvas: document.getElementById('viewport'),
@@ -27,6 +28,7 @@ const els = {
   showMirrorY: document.getElementById('showMirrorY'),
   centerText: document.getElementById('centerText'),
   lockStrokeAxis: document.getElementById('lockStrokeAxis'),
+  axisLockSensitivity: document.getElementById('axisLockSensitivity'),
   lockRotation: document.getElementById('lockRotation'),
   showFacePlane: document.getElementById('showFacePlane'),
   showFrontPlane: document.getElementById('showFrontPlane'),
@@ -104,6 +106,8 @@ const undoStack = [];
 const redoStack = [];
 let currentStroke = null;
 let strokeStartPoint = null;
+let activeStrokeAxis = null;
+let pendingDrawEvent = null;
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -251,9 +255,12 @@ function logMeshTransform(label, mesh) {
 function resetStrokeState() {
   currentStroke = null;
   strokeStartPoint = null;
+  activeStrokeAxis = null;
   undoStack.length = 0;
   redoStack.length = 0;
 }
+
+let dotPreviewDirty = false;
 
 function refreshDotPreviewGeometry() {
   const positions = new Float32Array(dotPreviewPoints.length * 3);
@@ -264,6 +271,7 @@ function refreshDotPreviewGeometry() {
   });
   dotPreviewGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   dotPreviewGeometry.computeBoundingSphere();
+  dotPreviewDirty = false;
 }
 
 function fitCameraToBounds(bounds) {
@@ -290,7 +298,7 @@ function fitCameraToBounds(bounds) {
 function clearAllMarks() {
   dotMarkRecords.length = 0;
   dotPreviewPoints.length = 0;
-  refreshDotPreviewGeometry();
+  dotPreviewDirty = true;
   while (marksGroup.children.length) {
     const mesh = marksGroup.children[0];
     removeMeshFromScene(mesh);
@@ -705,6 +713,8 @@ function projectPlanePointToSurface(planePoint) {
 function beginStroke() {
   currentStroke = { dots: [], previewPoints: [], textMeshes: [] };
   strokeStartPoint = null;
+  activeStrokeAxis = null;
+  pendingDrawEvent = null;
   redoStack.length = 0;
   updateActionButtons();
 }
@@ -713,7 +723,13 @@ function commitStroke() {
   if (currentStroke && (currentStroke.dots.length || currentStroke.textMeshes.length)) undoStack.push(currentStroke);
   currentStroke = null;
   strokeStartPoint = null;
+  activeStrokeAxis = null;
+  pendingDrawEvent = null;
   updateActionButtons();
+}
+
+function getAxisLockSwitchFactor() {
+  return Number(els.axisLockSensitivity?.value || AXIS_LOCK_SWITCH_FACTOR_DEFAULT);
 }
 
 function pointToFaceLocal(point) {
@@ -765,7 +781,7 @@ function createInsetDotAtPoint(point) {
   const previewPoint = projected.point.clone().add(projected.inwardNormal.clone().multiplyScalar(-MARK_VISUAL_LIFT_MM));
   dotPreviewPoints.push(previewPoint);
   if (currentStroke) currentStroke.previewPoints.push(previewPoint);
-  refreshDotPreviewGeometry();
+  dotPreviewDirty = true;
 }
 
 function createInsetDot(point) {
@@ -827,7 +843,16 @@ function constrainStrokePoint(point) {
   const dy = Math.abs(local.y - lastLocal.y);
   if (Math.max(dx, dy) < 0.1) return point;
 
-  if (dx >= dy) return faceLocalToPoint(local.x, lastLocal.y);
+  const switchFactor = Math.max(1, getAxisLockSwitchFactor());
+  if (!activeStrokeAxis) {
+    activeStrokeAxis = dx >= dy ? 'x' : 'y';
+  } else if (activeStrokeAxis === 'x') {
+    if (dy > dx * switchFactor) activeStrokeAxis = 'y';
+  } else if (dx > dy * switchFactor) {
+    activeStrokeAxis = 'x';
+  }
+
+  if (activeStrokeAxis === 'x') return faceLocalToPoint(local.x, lastLocal.y);
   return faceLocalToPoint(lastLocal.x, local.y);
 }
 
@@ -866,7 +891,7 @@ function strokeUndo() {
   }
   if (stroke.previewPoints.length) {
     dotPreviewPoints.splice(dotPreviewPoints.length - stroke.previewPoints.length, stroke.previewPoints.length);
-    refreshDotPreviewGeometry();
+    dotPreviewDirty = true;
   }
   for (const mesh of stroke.textMeshes) removeMeshFromScene(mesh);
   redoStack.push(stroke);
@@ -880,7 +905,7 @@ function strokeRedo() {
   if (stroke.dots.length) dotMarkRecords.push(...stroke.dots);
   if (stroke.previewPoints.length) {
     dotPreviewPoints.push(...stroke.previewPoints);
-    refreshDotPreviewGeometry();
+    dotPreviewDirty = true;
   }
   for (const mesh of stroke.textMeshes) marksGroup.add(mesh);
   undoStack.push(stroke);
@@ -1065,14 +1090,16 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
   if (!isDrawing || mode !== 'draw') return;
-  const point = intersectPlane(ev);
-  if (!point) return;
-  drawInterpolatedDots(point);
+  pendingDrawEvent = {
+    clientX: ev.clientX,
+    clientY: ev.clientY
+  };
 });
 window.addEventListener('pointerup', () => {
   if (isDrawing) commitStroke();
   isDrawing = false;
   lastDrawPoint = null;
+  pendingDrawEvent = null;
 });
 
 els.exportBtn.addEventListener('click', async () => {
@@ -1154,6 +1181,12 @@ debugLog('app initialized');
 
 (function render() {
   requestAnimationFrame(render);
+  if (isDrawing && mode === 'draw' && pendingDrawEvent) {
+    const point = intersectPlane(pendingDrawEvent);
+    pendingDrawEvent = null;
+    if (point) drawInterpolatedDots(point);
+  }
+  if (dotPreviewDirty) refreshDotPreviewGeometry();
   controls.update();
   renderer.render(scene, camera);
 })();
