@@ -381,20 +381,24 @@ function buildMirrorHelpers() {
   updateMirrorHelperVisibility();
 }
 
-function applyFaceSelection(normal, origin, xAxisHint) {
+function computePlaneAxesFromSceneGrid(normal) {
+  const planeNormal = normal.clone().normalize();
+  const alignQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), planeNormal);
+
+  const xAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(alignQuat).normalize();
+  const yAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(alignQuat).normalize();
+
+  return { xAxis, yAxis };
+}
+
+function applyFaceSelection(normal, origin) {
   faceNormal = normal.clone().normalize();
 
-  let xAxis = xAxisHint?.clone() || new THREE.Vector3(1, 0, 0);
-  xAxis = xAxis.sub(faceNormal.clone().multiplyScalar(xAxis.dot(faceNormal)));
-  if (xAxis.lengthSq() < 1e-8) {
-    xAxis = new THREE.Vector3(1, 0, 0).sub(faceNormal.clone().multiplyScalar(faceNormal.x));
-  }
-  if (xAxis.lengthSq() < 1e-8) {
-    xAxis = new THREE.Vector3(0, 1, 0).sub(faceNormal.clone().multiplyScalar(faceNormal.y));
-  }
-
-  faceXAxis = xAxis.normalize();
-  faceYAxis = new THREE.Vector3().crossVectors(faceNormal, faceXAxis).normalize();
+  // Keep drawing/mirror axes aligned with scene-grid/front-plane orientation,
+  // rather than with the picked triangle edge direction.
+  const sceneAxes = computePlaneAxesFromSceneGrid(faceNormal);
+  faceXAxis = sceneAxes.xAxis;
+  faceYAxis = sceneAxes.yAxis;
 
   faceOrigin = origin.clone();
   facePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(faceNormal, faceOrigin);
@@ -414,7 +418,7 @@ function calculateFaceFrame() {
   const ab = new THREE.Vector3().subVectors(b, a);
   const ac = new THREE.Vector3().subVectors(c, a);
   const normal = new THREE.Vector3().crossVectors(ab, ac).normalize();
-  applyFaceSelection(normal, a, ab);
+  applyFaceSelection(normal, a);
 }
 
 function findLargestFlatSurfaceSelection() {
@@ -502,7 +506,7 @@ function autoSelectLargestFlatSurface() {
   }
 
   clearFaceSelection();
-  applyFaceSelection(selection.normal, selection.origin, selection.axisHint);
+  applyFaceSelection(selection.normal, selection.origin);
 
   removeMeshFromScene(frontHelper);
   frontRef = { normal: faceNormal.clone(), origin: faceOrigin.clone() };
@@ -946,7 +950,7 @@ els.showDebug?.addEventListener('change', () => {
 });
 els.planeSize?.addEventListener('input', () => {
   desiredPlaneSize = Number(els.planeSize.value);
-  if (facePlane) applyFaceSelection(faceNormal, faceOrigin, faceXAxis);
+  if (facePlane) applyFaceSelection(faceNormal, faceOrigin);
   debugLog('drawing plane size changed', { sizeMm: desiredPlaneSize });
 });
 els.copyLogsBtn?.addEventListener('click', async () => {
